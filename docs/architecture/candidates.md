@@ -1,12 +1,13 @@
 # 아키텍처 후보
 
-> 상태: **1단계(후보 설계)**. 2026-11-08 작성. 이 문서는 갈래마다 후보 2~3개와 트레이드오프, 추천을 적는다. 추천은 스파이크(`spikes.md`)와 아키텍처 그릴링을 거쳐 ADR로 확정한다. 질문 분류는 `questions.md`에 있다.
-> 근거: `SPEC.md`(`docs/spec-rewrite` 45cff00), 그릴링 기록 `work/jadecode/grilling.md`, 아래 「조사 근거」의 2026-11-08 조사.
+> 상태: **1단계 + 스파이크 결과·라운드 A 반영**. 2026-11-08 작성, 2026-11-09 고침. 이 문서는 갈래마다 후보 2~3개와 트레이드오프, 추천을 적는다. 추천은 아키텍처 그릴링 라운드 B를 거쳐 ADR로 확정한다. 질문 분류는 `questions.md`, 스파이크 판정은 `spike-results.md`에 있다.
+> 근거: `SPEC.md`(`docs/spec-rewrite` 45cff00), 그릴링 기록 `work/jadecode/grilling.md`(명세 37문항 + 아키텍처 라운드 A A1~A11), 1차 스파이크 S1·S2·S3·S4·S5·S9(2026-11-08~09), 아래 「조사 근거」의 2026-11-08 조사.
 
 ## 읽는 법
 
 - 갈래는 다섯이다: ① 에이전트 실행 계층 ② 서버 코어 ③ 봇·자기개선 장치 ④ 클라이언트 UI·프로토콜 ⑤ 원격 접속·배포.
 - 후보마다 SPEC 요구 충족, 위험, 비용을 적는다. 비용은 첫 버전(Mac 서버 + Mac 프론트)까지의 대략적인 구현량이다(S: 며칠, M: 1~2주, L: 3주 이상).
+- 표시: **[확정 A#]** 라운드 A에서 사용자가 정함, **[S#]** 스파이크 실측을 반영함, **[구현 중 확인]** 스파이크로 닫지 못했고 구현하면서 확인함(2026-11-09 사용자 결정), **[라운드 B#]** 사용자에게 물을 것(`questions.md` 끝).
 - 모든 실행 계층 후보는 「오늘의 수동 운영에서 나온 요구」 다섯 가지(아래 R1~R5)를 어떻게 푸는지 짚는다. 마지막 절에서 추천 구성 전체로 다시 짚는다.
 
 | 번호 | 오늘 겪은 일 → 해야 할 일 |
@@ -27,100 +28,178 @@
 
 서버가 의사 터미널(PTY)을 열고 에이전트의 대화형 TUI를 그대로 돌린다. herdr·rex가 쓰는 방식이다.
 
-- 구성: `portable-pty` + 터미널 에뮬레이터(`alacritty_terminal` 또는 libghostty-vt). 상태는 Claude Code 훅(`UserPromptSubmit`=일하는 중, `Notification`의 `permission_prompt`·`idle_prompt`=막힘, `Stop`=한가함)과 화면 판독 규칙(herdr `src/detect/manifests/*.toml`을 옮겨 옴)으로 읽는다. 상태 보고 형식은 rex의 OSC 7501 Program Status Protocol을 그대로 써도 된다(간단해서 재구현 쉬움).
+- 구성: `portable-pty` + 터미널 에뮬레이터(`alacritty_terminal` 또는 libghostty-vt). 상태는 Claude Code 훅(`UserPromptSubmit`=일하는 중, `PermissionRequest`·`Notification`의 `permission_prompt`=막힘, `Stop`=한가함)과 화면 판독 규칙(herdr `src/detect/manifests/*.toml`을 옮겨 옴)으로 읽는다. 상태 보고 형식은 rex의 OSC 7501 Program Status Protocol을 그대로 써도 된다.
 - 메시지 전달: 키 입력을 흘려 넣는다.
 - 요구 충족
   - R1 ○ PTY를 cwd에서 연다.
   - R2 △ 에이전트에 jadecode CLI·MCP 도구를 주면 되지만, 오케스트레이터 → 인스턴스 방향은 키 입력 주입이라 바쁜 상태·붙여넣기·타이밍에 깨진다.
-  - R3 △ 훅의 `PermissionRequest`로 코드에서 판정할 수 있다. 화면 판독 기반 막힘 감지는 문구가 바뀌면 깨진다(herdr는 매니페스트를 원격으로 자동 갱신해서 버틴다).
-  - R4 ○ `--session-id <uuid>`로 시작, `--resume <id>`로 이음(`--fork-session`을 붙일 때만 새 id).
+  - R3 △ 대화형 TUI는 권한 창을 화면에 띄운다. 훅의 `PermissionRequest`로 알 수는 있지만 승인 자체는 화면 입력이다. git 레포 cwd에서는 폴더 신뢰 창도 뜬다[S4].
+  - R4 ○ `--session-id <uuid>`로 시작, `--resume <id>`로 이음.
   - R5 ○ 서버가 PTY를 가지므로 상태를 안다.
   - 사람 붙기: 최상. 진짜 TUI를 그대로 보여 준다.
-- 위험: 메시지 주입이 깨지기 쉽다. 화면 판독은 에이전트 버전마다 손봐야 한다. 서버가 PTY를 가지므로 서버 재시작 = 에이전트 프로세스 종료(herdr도 셸에 `claude --resume`을 다시 타이핑해 복구한다).
-- 비용: M~L(PTY·에뮬레이터·판독 규칙·재시작 복구).
+- 위험: 메시지 주입이 깨지기 쉽다. 화면 판독은 에이전트 버전마다 손봐야 한다. 서버 재시작 = 에이전트 프로세스 종료.
+- 비용: M~L.
 
-### A2. 구조화 드라이버 (추천)
+### A2. 구조화 드라이버 (추천, 스파이크 통과)
 
-에이전트를 화면 없이 구조화된 입출력으로 돌린다. Claude Code는 `claude -p --input-format stream-json --output-format stream-json`(공식 바이너리, 양방향 JSON 줄), Codex는 `codex app-server`(stdio JSON-RPC), Gemini·opencode는 ACP(`gemini --acp`, `opencode acp`)로 같은 모양을 얻는다.
+에이전트를 화면 없이 구조화된 입출력으로 돌린다. Claude Code는 공식 바이너리를 `claude -p --input-format stream-json --output-format stream-json --verbose`로 상주시켜 양방향 JSON 줄로 몬다. Codex는 `codex app-server`(stdio JSON-RPC), Gemini·opencode는 ACP(`gemini --acp`, `opencode acp`)로 같은 모양을 얻는다.
 
 - 구성
   - 서버 안의 **드라이버 인터페이스**는 ACP 개념에 맞춘다: `new_session(cwd, mcp_servers, bot_snapshot)`, `load(session)`, `prompt(text)`, `cancel()`, `update` 이벤트 흐름, `request_permission` 콜백. 첫 버전 드라이버는 Claude Code 하나다.
-  - 인스턴스 id는 jadecode가 정하고(ULID), 에이전트의 세션 id(Claude `session_id`)를 따로 매핑해 둔다. 에이전트 쪽 id가 어떻게 바뀌어도 jadecode 인스턴스 id는 바뀌지 않는다.
-  - 권한: 봇 정의의 권한 정책을 Claude Code `--settings` 파일(allow/deny 규칙)과 `--permission-mode`로 만들어 넣고, 규칙에 없는 요청은 `--permission-prompt-tool mcp__jadecode__permission`으로 서버에 RPC로 온다. v2.1.302부터 `-p`는 승인 수단이 없으면 거부하므로 "몰래 멈춤"이 구조적으로 없다.
-  - 메시지: 인스턴스마다 jadecode MCP 서버(`--mcp-config`)를 붙여 `report`·`ask`·`propose`·`error` 도구와 카드 조작 도구를 준다. 오케스트레이터 → 인스턴스는 stdin의 사용자 턴으로 넣는다.
-  - 사람 붙기: 1차는 이벤트 흐름을 그리는 대화 화면. 2차로 "터미널로 넘기기": 구조화 프로세스를 멈추고 PTY에서 `claude --resume <session_id>` TUI를 띄워 사람에게 넘기고, 끝나면 다시 구조화로 잇는다(스파이크 S4).
+  - 인스턴스 id는 jadecode가 정하고(ULID), 에이전트 세션 id(uuid)는 서버가 만들어 `--session-id`로 넘긴다. 세션 id는 resume·SIGKILL 뒤 resume·구조화 ↔ TUI 왕복을 거쳐도 바뀌지 않았다[S1 H3, S4 H1·H2].
+  - 권한: 봇 정의의 권한 정책을 `--settings` 파일(allow/deny)과 `--permission-mode`로 넣고, 규칙 밖 요청은 `--permission-prompt-tool mcp__jadecode__permission`으로 서버에 RPC로 온다[S2].
+  - 메시지: 인스턴스마다 jadecode MCP 서버(`--mcp-config --strict-mcp-config`)를 붙여 `report`·`ask`·`propose`·`error` 도구와 카드 조작 도구를 준다. 워커는 지침 없이 도구 설명만으로도 알맞은 때에 불렀다(완료 카드 26/26 `report(done)`)[S3 H1]. 오케스트레이터 → 인스턴스는 stdin의 사용자 턴으로 넣는다.
+  - 사람 붙기: 첫 버전은 이벤트 흐름을 그리는 **대화 화면**[확정 A10]. "터미널로 넘기기"(구조화 프로세스를 멈추고 PTY에서 `claude --resume` TUI를 띄움)는 실측으로 섰으므로[S4] 2차에 넣는다.
 - 요구 충족
-  - R1 ○ 프로세스를 카드 폴더에서 띄우고 `--add-dir`로 레포 워크트리를 더한다.
-  - R2 ○ MCP 도구 호출이 곧 메시지다. 대화 기록을 읽어 갈 일이 없다.
-  - R3 ○ 규칙 밖 요청은 반드시 RPC로 오거나 거부된다. 막힘 = "권한 RPC가 열려 있음"으로 정확히 안다.
-  - R4 ○ jadecode 인스턴스 id ↔ 세션 id 매핑, `--session-id` 지정, 재시작 때 `--resume`.
+  - R1 ○ 프로세스를 카드 폴더에서 띄우고 `--add-dir`로 레포 워크트리를 더한다. 추가 폴더 안 쓰기는 승인 없이, 밖은 RPC 또는 거부[S1 H4, S2 H1].
+  - R2 ○ MCP 도구 호출이 곧 메시지다[S3].
+  - R3 ○ 오늘 멈췄던 다섯 경우(허용 밖 Bash, 카드 밖 쓰기, 다른 git 루트, 웹 접근, 질문 도구)가 모두 RPC 또는 즉시 거부로 왔고 조용한 멈춤은 0건이었다. `-p`에서는 "permission-root relocation" 창이 따로 뜨지 않는다[S2 H3]. 단 **권한 서버 장애**(시간 초과·연결 끊김·시작 실패)는 거부가 아니라 도구 오류나 `result` 없는 종료로 나오므로, 막힘은 서버 자신의 RPC 기록과 프로세스 감시로 판정한다[S2 H2].
+  - R4 ○ 위 세션 id 규칙.
   - R5 ○ 모든 상태가 이벤트로 서버에 온다.
 - 위험
-  - CLI의 비대화 모드 동작이 버전마다 바뀐다(예: v2.1.302의 기본 권한 변경). → CLI 버전을 봇 정의에 고정하고 드라이버 계약 테스트를 둔다.
-  - 진짜 TUI를 보는 경험은 "터미널로 넘기기"에 기대야 한다.
-  - 과금 정책: 구독 로그인은 "수정하지 않은 Claude Code 바이너리"를 본인이 쓰는 것을 허용한다. Agent SDK로 만든 앱에 구독을 쓰는 것은 회색 지대다(미확인). 그래서 SDK가 아니라 공식 `claude` 바이너리를 하위 프로세스로 구동한다. → `questions.md` X1
-- 비용: M(드라이버 하나 + MCP 서버 + 대화 화면). 터미널 넘기기는 +S.
+  - CLI의 비대화 모드 동작이 판마다 바뀐다. 쓰는 플래그 중 `--append-system-prompt-file`은 `--help`에 없는 숨은 플래그다[S1]. → CLI 판을 봇 정의에 고정하고 드라이버 계약 테스트를 둔다(씨앗: S1 `harness/`, S2 `proto/cases.sh`). 판 고정 방법은 [구현 중 확인].
+  - 과금: 모든 인스턴스와 평가를 사용자 구독의 공식 `claude` 바이너리로 돌린다[확정 A9]. 계정 이용률(5시간·7일 창)을 모든 봇이 나눠 쓴다[S1 H5] → [라운드 B6].
+- 비용: M(드라이버 하나 + MCP 서버 + 대화 화면). 터미널 넘기기는 +S(2차).
+
+#### A2 드라이버 계약 (스파이크 반영)
+
+S1·S2·S4가 낸 수정 제안을 한곳에 모은다. 첫 버전 드라이버 구현 카드의 완료 조건이 된다.
+
+**실행과 격리** [S1 5, S3 4, S4 3, 공통 발견 1·2]
+
+- 표준 플래그: `--setting-sources "" --strict-mcp-config --settings <정책> --plugin-dir <봇 스킬> --append-system-prompt-file <봇 지침> --mcp-config <jadecode> --model <봇 모델> --permission-mode <정책 값> --permission-prompt-tool mcp__jadecode__permission --add-dir <워크트리…>`. `--add-dir`는 가변 인자라 다른 플래그 앞에 둔다[S9].
+- `--setting-sources ""`가 사용자 전역 지침(`~/.claude/CLAUDE.md`)·상위 `AGENTS.md`·사용자 훅·플러그인·커넥터 MCP를 모두 뺀다. `project,local`로는 `~/.claude/CLAUDE.md`가 샌다[S3·S4·S9].
+- 정책 파일에 넣을 것: 허용할 스킬만 allow하고 나머지 내장 스킬은 deny(목록에서 뺄 방법은 없음), `attribution` 값(사용자 설정이 빠지면 기본 attribution 문구로 돌아감). 사용자의 커밋·문서 규칙을 인스턴스에 줄지는 [라운드 B5].
+- 읽기 범위: 카드 폴더 + 그 카드의 워크트리 + 프로젝트 공유 문서. 다른 카드 폴더 읽기는 deny(형제 실행 파일을 읽은 관측)[S3].
+- 자식 환경변수는 화이트리스트(`HOME·PATH·LANG·USER·SHELL·TERM` + jadecode 토큰)로 넘긴다. 부모의 `CLAUDECODE`·`CLAUDE_CODE_*`를 끊는다[S1·S4].
+- 남는 누수: Bash 도구가 사용자 셸 스냅숏을 source한다(별칭·함수가 섞임). 첫 버전은 받아들인다.
+
+**턴과 큐** [S1 1·2]
+
+- 턴 경계와 메시지 큐는 서버가 쥔다. 도구를 쓰는 턴에 넣은 메시지는 다음 도구 결과 경계에서 같은 턴에 끼어들고 따로 `result`가 나오지 않는다. 글만 쓰는 턴이면 다음 턴으로 줄을 선다. 그래서 "메시지 하나 = result 하나"를 가정하지 않는다.
+- 기본은 `result`(한가함)를 본 뒤 넣고, 급한 것(사람의 말, 중단 지시)만 즉시 넣는다.
+- `cancel()` = `control_request{subtype: interrupt}`. 현재 턴만 끊고 이미 넣은 메시지는 남으므로, 서버 큐의 아직 안 넣은 것만 취소할 수 있다.
+- 턴마다 `system/init`이 다시 나온다. 턴 시작 신호로 쓴다[S3].
+
+**재시작과 생애** [S1 3·4·7]
+
+- 처음은 `--session-id <uuid>`, 이후 모든 재시작은 **같은 카드 폴더에서** `--resume <같은 uuid>`. "already in use"(이미 있음)와 "No conversation found"(없음)를 구별한다.
+- resume 기본값 `--system-prompt-snapshot on`은 시작 때의 봇 지침을 계속 쓴다. 인스턴스를 시작 때 봇 커밋으로 고정하는 규칙(③ C1)과 맞으므로 그대로 쓰고, 같은 인스턴스에 새 봇 버전을 적용할 때만 `off`로 resume한다.
+- 종료는 stdin 닫기(한가할 때) 또는 SIGTERM → 5초 → SIGKILL. SIGKILL·프로세스 그룹 kill로는 도구 자식이 고아로 남으므로 비정상 종료 뒤 cgroup(Linux `systemd-run --user --scope`, Mac은 자손 추적)으로 치운다.
+- 유휴 15분까지 같은 프로세스가 다음 턴을 받았다. 몇 시간·잠자기 뒤는 [구현 중 확인], 실패하면 `--resume`으로 메운다.
+
+**권한** [S2 1~6]
+
+- 막힘·거부의 정본은 서버의 권한 RPC 기록이다. RPC를 받는 순간 `instance.blocked`, 답할 때 `permission.resolved(allow|deny|timeout)`를 일지에 쓴다. `result.permission_denials`에 기대지 않는다.
+- 상한은 RPC 처리기가 정하고 **처리기 상한(25분) < CLI 무응답 중단(1800초)** 을 계약 테스트로 지킨다.
+- 시작 때 init `mcp_servers[]`에서 jadecode 서버가 `connected`가 아니면 바로 `failed`로 두고 다시 띄운다(그대로 두면 첫 권한 요청에서 `result` 없이 rc=1).
+- 권한 경로는 MCP(`mcp__jadecode__permission`)를 쓰고, stream-json `--permission-prompt-tool stdio`는 예비로 둔다.
+- AskUserQuestion은 권한 RPC에서 가로채 `question` 메시지로 바꾸고, 답을 `updatedInput.answers`로 돌려준다.
+- 정책 작성 규칙: 막을 명령은 allow에서 빼는 것으로 부족하다(읽기 전용 판정 명령은 그냥 실행됨). 사람 절차 명령·네트워크 명령은 settings `deny`로 둔다. allow 규칙은 복합 명령·명령 치환·cwd 밖 리다이렉트를 통과시키지 않는다. 봇 지침에 "레포 안에서는 `cd` 대신 cwd 기준 경로, 셸 변수로 경로를 만들지 않음, 파일 쓰기는 Write 도구"를 넣는다[S9].
+
+**사람 붙기(터미널로 넘기기, 2차)** [S4 1~4]
+
+- 인스턴스 임대 상태 `structured | handoff | terminal | idle`. 인스턴스당 claude 프로세스는 최대 하나(R-a). 넘기기 순서는 interrupt → result → stdin 닫기 → 종료 확인 → PTY에서 `--resume`(R-b, 약 1.1초). 밖에서 같은 세션을 연 프로세스는 `~/.claude/sessions/*.json`으로 감지만 하고(R-c, 비공식 형식), 세대가 바뀔 때 전사의 가지 수를 세어 "갈라짐"을 남긴다(R-d).
+- 그 결과 **사람이 터미널로 붙어 있는 동안 그 인스턴스의 구조화 실행은 멈추고**, 오케스트레이터 메시지는 큐에 쌓인다 → [라운드 B2].
+- git 레포 cwd에서 TUI는 폴더 신뢰 창을 먼저 띄운다. 사람이 한 번 수락한다(워크트리 경로마다). 서버가 `~/.claude.json`에 써 넣지 않는다. 워크트리가 원본 레포의 신뢰를 물려받는지는 [라운드 B4].
+- TUI에도 카드 정책의 `--permission-mode`를 명시한다(주지 않으면 `auto`로 뜸).
+- TUI 동안 상태는 `--settings`의 http 훅(`UserPromptSubmit`·`PermissionRequest`·`Notification`·`Stop`·`SessionEnd`)으로 받고, `SessionStart`만 command 훅이나 서버 자체 기록으로 대신한다. interrupt로 멈춘 턴은 `Stop`이 안 오므로 서버가 따로 기록한다.
+- 사람 턴은 전사의 `entrypoint: cli`로 구별해 카드 이력에 `human_direct`로 옮긴다.
+- 넘기기 한 번에 프롬프트 캐시 생성 약 1만~3만 토큰이 든다.
 
 ### A3. herdr를 실행 기층으로 (API 사용 또는 포크)
 
 herdr 서버를 띄워 두고 jadecode 서버가 그 소켓 API(NDJSON)로 pane을 만들고 에이전트를 시작한다. 모자란 것은 포크해서 고친다.
 
-- 장점: 24개 에이전트 판독 매니페스트, PTY·에뮬레이터(libghostty-vt), 실험적 live handoff(업그레이드 때 PTY fd를 넘겨 프로세스 생존), Linux·macOS·Windows 지원을 바로 얻는다.
-- 요구 충족: R1 ○(`pane --cwd`). R2 △(A1과 같음). R3 △(Claude 상태는 v11부터 화면 판독, 승인 API 없음). R4 △(herdr pane id는 서버 수명, 재시작 때 셸에 resume 타이핑). R5 △(이벤트는 메모리 링 512개, 상태 변화 구독은 pane마다 100ms 폴링, 와일드카드·이력 없음, 뒤처지면 `events_lost`).
-- 위험
-  - 포크하면 약 29만 줄짜리 단일 크레이트(라이브러리 타깃 없음)를 1.0 전, 반년에 34번 릴리스하는 상류 옆에서 유지한다. 상류는 외부 PR을 자동으로 닫는다.
-  - API는 호환 약속이 없다(약속은 endpoint 프로토콜 gen1뿐).
-  - Android 빌드 불가(ghostty-vt). 서버만 쓰므로 당장 문제는 아니다.
-- 비용: API 사용은 S(대신 R2~R5를 jadecode 쪽에서 메워야 해서 결국 M), 포크는 L + 상시 유지비.
+- 장점: 24개 에이전트 판독 매니페스트, PTY·에뮬레이터(libghostty-vt), 실험적 live handoff, Linux·macOS·Windows 지원.
+- 요구 충족: R1 ○. R2 △. R3 △(Claude 상태는 화면 판독, 승인 API 없음). R4 △(pane id는 서버 수명). R5 △(이벤트는 메모리 링 512개, 상태 구독은 pane마다 폴링, 와일드카드·이력 없음).
+- 위험: 포크하면 약 29만 줄짜리 단일 크레이트를 빠르게 움직이는 상류 옆에서 유지한다. API 호환 약속이 없다. Android 빌드 불가.
+- 비용: API 사용은 결국 M, 포크는 L + 상시 유지비.
+- 스파이크 뒤: A2가 S1~S4에서 흔들리지 않았으므로 S8(herdr 반증)을 띄울 이유가 없다. 실행 기층에서 뺀다[확정 A1: 서버 새로 작성].
 
 ### 검토 후 뺀 것: Claude Code 자체 백그라운드 세션
 
-`claude --bg` / `claude agents --json` / `claude attach`는 상태(`working|blocked|done|failed|stopped`)와 생존(supervisor)을 준다. 지금 워크스페이스가 이 방식으로 돌고 있고, R3·R4가 바로 여기서 생긴 문제다. research preview이고, 셸에서 메시지를 보내는 공식 경로가 `--resume <uuid> --bg "msg"`뿐이며, 옵션을 붙이면 사본이 생긴다. 한 벤더에 묶인다. 그래서 뺀다.
+`claude --bg` / `claude agents --json` / `claude attach`는 지금 워크스페이스가 쓰는 방식이고, R3·R4가 여기서 생겼다. research preview이고 메시지 경로가 `--resume <uuid> --bg "msg"`뿐이며, 옵션을 붙이면 사본이 생긴다. 뺀다.
+
+### berth와의 관계 [라운드 B3]
+
+`repository/berth`는 사용자의 레포로, 지금 jadecode와 겹치는 일을 한다. 2026-11-09 읽은 사실:
+
+- 상태: 커밋이 하나도 없다(모든 파일 미추적, 2026-10-28 작성).
+- 데몬(Go, 약 3천 줄): 세션 두 종류 — `tui`(PTY + Go VT 에뮬레이터, 붙을 때 화면 스냅숏 + 바이트 흐름, Claude Code 훅으로 상태)와 `structured`(Claude Code stream-json, 권한 요청을 먼저 답한 클라이언트가 처리). 두 종류가 `claudeSessionId`를 공유해 `resume`으로 서로 넘어간다. tsnet 내장(시스템 Tailscale 없이 tailnet 노드), WhoIs로 소유자만 들임. dev 서버 이름 붙여 노출(`berth run`).
+- 이력·구독: 구조화 세션의 이벤트 이력은 프로세스 메모리에만 있고, 상태 변화 구독(SSE)은 느린 구독자를 버린다(다시 붙으면 동기화).
+- 데스크톱(Rust GPUI, 약 5.5천 줄): `alacritty_terminal 0.26`으로 터미널 격자를 그리고, 그 아래 한국어 IME가 되는 네이티브 입력창, 대화 화면(도구 호출 카드, 승인·거부 버튼, 중단), 승인 대기 알림. macOS가 주 대상이라고 적혀 있다. 이번에 빌드·실행은 하지 않았다(Mac 동작 [구현 중 확인]).
+- 웹·Android: 데몬이 내주는 PWA(브라우저). jadecode의 "네이티브, 웹뷰 금지"와는 맞지 않는다.
+
+jadecode 관점: berth의 데몬은 A2 + 터미널 넘기기를 이미 작은 규모로 구현했고, 데스크톱은 S6가 확인하려던 GPUI 터미널 보기·IME 입력창·대화 화면을 이미 갖고 있다. 반면 이벤트 일지·카드·봇·메시지 이력(② B2)은 없고 언어(Go)가 서버 결정(Rust)[확정 A1]과 다르다.
+
+| 선택지 | 내용 | 장점 | 단점 |
+|---|---|---|---|
+| (가) jadecode가 흡수 (추천) | berth 데스크톱의 터미널 보기·입력창·대화 화면 코드를 jadecode Mac 클라이언트의 출발점으로 가져오고, 데몬의 구조화·TUI 드라이버 로직은 jadecode Rust 서버 드라이버로 옮긴다. berth는 따로 키우지 않는다 | Mac 화면 위험(S6)을 크게 줄인다. 제품 하나에 집중 | dev 서버 노출(`berth run`)과 PWA는 jadecode 범위 밖이라 버리거나 보류된다 |
+| (나) 둘 다 두고 jadecode가 berth 데몬을 실행 기층으로 | jadecode 서버가 berth API로 세션을 만든다 | 실행 계층을 바로 얻는다 | Go·Rust 두 데몬, 이력이 berth 메모리에 있어 B2와 겹치고 어긋난다, Tailscale 노드도 둘 |
+| (다) 따로 둠 | 서로 참고만 | 각자 단순 | 같은 일을 두 번 한다 |
 
 ### 추천: A2
 
-R2·R3·R4를 구조로 푸는 것은 A2뿐이다. A1의 장점(진짜 TUI)은 A2의 "터미널로 넘기기"로 필요한 순간에만 얻는다. A3는 실행 기층보다 **차용 대상**으로 쓴다: 판독 매니페스트는 A2의 터미널 넘기기 동안 상태 보조 판독에, live handoff 발상은 서버 업그레이드 설계에 참고한다.
+R2·R3·R4를 구조로 푸는 것은 A2뿐이고, S1~S4에서 그대로 섰다. A1의 장점(진짜 TUI)은 A2의 "터미널로 넘기기"(2차)로 필요한 순간에만 얻는다. A3는 차용 대상으로만 둔다.
 
 ---
 
 ## ② 서버 코어 (상태·이벤트 이력·구독·메시지)
 
-SPEC의 두 조건이 이 갈래를 정한다. "카드 폴더의 파일이 정본이고, 서버 상태는 파일에서 다시 만들 수 있거나 파일로 남아야 한다"(Q3), "메시지와 이벤트는 이력으로 남아 늦게 봐도 빠짐없이 본다"(Q22).
+SPEC의 두 조건이 이 갈래를 정한다. "카드 폴더의 파일이 정본이고, 서버 상태는 파일에서 다시 만들 수 있거나 파일로 남아야 한다"(Q3), "메시지와 이벤트는 이력으로 남아 늦게 봐도 빠짐없이 본다"(Q22). 언어는 Rust[확정 A1].
 
 ### B1. DB 정본 (SQLite에 모든 상태, 파일은 내보내기)
 
-- 장점: 트랜잭션·질의가 쉽다. 구현이 가장 빠르다.
-- 단점: "파일이 정본"을 어긴다. 에이전트는 파일(`task.md`)을 직접 고치므로 DB와 파일이 어긋나는 순간 어느 쪽이 맞는지 정해야 하고, 결국 파일을 따라가게 된다. 사람이 git·편집기로 들여다보는 지금 방식과도 멀다.
-- 비용: S~M. **SPEC 위반이라 추천하지 않는다.**
+- 장점: 트랜잭션·질의가 쉽다.
+- 단점: "파일이 정본"을 어긴다. 에이전트는 파일을 직접 고치므로 결국 파일을 따라가게 된다.
+- **SPEC 위반이라 추천하지 않는다.**
 
-### B2. 파일 정본 + 카드별 이벤트 일지 + 재생성 가능한 색인 (추천)
+### B2. 파일 정본 + 카드별 이벤트 일지 + 재생성 가능한 색인 (추천, 스파이크 통과)
 
 - 파일
   - 카드 폴더: `task.md`(앞머리 YAML에 상태 칸) + `events.jsonl`(그 카드의 이벤트·메시지, 덧붙이기만) + 레포별 워크트리 + `handoff/`·`transcripts/`.
   - 프로젝트 폴더: `project.toml` + 프로젝트 `events.jsonl`(오케스트레이터 대화, 카드 생성 등).
-  - 워크스페이스: `events/global.jsonl`(봇 버전 반영, 정책 변경, 인스턴스 생애).
+  - 워크스페이스: `events/global.jsonl`(봇 반영, 정책 변경).
+  - 어느 일지에 쓰나: 카드에서 일하는 인스턴스의 이벤트는 그 카드 일지(카드와 함께 `arxiv/`로 감), 오케스트레이터 인스턴스의 이벤트는 프로젝트 일지, 봇·정책은 전역 일지. 토큰 단위 출력 흐름은 일지에 넣지 않고 `transcripts/`에 둔다(일지 쓰기는 초당 1~1.6천 건 한도)[S5].
 - 서버
-  - 모든 이벤트에 워크스페이스 전역의 빈틈없는 순번(`seq`)을 매기고 해당 일지에 쓴 뒤 구독자에게 보낸다(쓰기 먼저, 보내기 나중).
-  - SQLite(WAL)는 **색인**이다. 보드 투영, 인스턴스 명단, 지표, 구독용 seq 색인. 지워도 일지와 `task.md`를 훑어 다시 만든다.
-  - 구독: 주제는 `project/<p>`, `project/<p>/card/<c>`, `instance/<i>`, `bot/<b>`처럼 경로이고 앞부분 일치로 거른다. 구독은 `from_seq`를 받아 그 뒤부터 색인을 읽어 보내므로, 느린 구독자도 끊기지 않고 따라잡는다(herdr·rex의 "뒤처지면 끊고 다시 스냅샷" 문제가 없다). 처음 붙는 클라이언트는 스냅샷 + 그 seq 이후 이벤트를 받는다(rex 방식).
-  - `task.md` 쓰기 규칙: 본문은 누구나 고친다(서버는 파일 감시로 `card.file_changed` 이벤트를 낸다). 앞머리의 상태 칸(단계·경로·상태 배지)은 서버만 쓴다. 다른 쓰기가 상태 칸을 바꾸면 서버가 그것을 API 호출로 보고 종료 조건을 검사해 받아들이거나, 거절하고 되돌린 뒤 `error` 이벤트를 남긴다.
-- 요구 충족: Q3 ○(색인은 버려도 됨), Q22 ○(일지가 이력), 늦게 붙은 구독자 ○, 카드 보관 때 일지가 카드와 함께 `arxiv/`로 간다 ○.
-- 위험: 전역 seq와 카드별 파일을 함께 맞추는 쓰기 경로(서버가 유일한 쓰는 쪽이어야 함), 파일 감시의 플랫폼 차이(macOS FSEvents·Linux inotify), 재구성 시간. → 스파이크 S5.
-- 비용: M.
+  - 모든 이벤트에 워크스페이스 전역의 빈틈없는 순번(`seq`)을 매긴다.
+  - SQLite(WAL)는 **색인**이다. 보드 투영, 인스턴스 명단, 지표, 구독용 seq 색인. 지워도 일지와 `task.md`를 훑어 다시 만든다. 카드 1,000개·이벤트 10만 건 재구성이 Linux에서 0.46초(따뜻함)~2.0초(차가움)[S5 H2]. Mac 수치는 [구현 중 확인].
+  - 구독: 주제는 `project/<p>`, `project/<p>/card/<c>`, `instance/<i>`, `bot/<b>`처럼 경로이고 **경로 마디 단위** 앞부분 일치로 거른다(`project/p1`이 `project/p10`에 맞으면 안 됨). 구독은 `from_seq`를 받아 색인에서 읽어 보내므로 구독자별 버퍼가 없고, 20~40초 멈춘 구독자도 끊기지 않고 따라잡았다(서버 RSS 약 36MB 일정)[S5 H3].
+  - 처음 붙는 클라이언트는 스냅샷 + 그 seq 이후 이벤트를 받는다.
+
+#### B2 쓰기 규칙 (스파이크 반영) [S5 1~6]
+
+1. **쓰기 순서와 승인**: 단일 쓰기 스레드가 seq 부여 → 일지 `write` → fsync(묶음) → 색인 커밋 → 그 뒤 알림·RPC 승인. 승인은 "일지에 fsync됐다"는 뜻이다. 일지는 늘 색인보다 앞서거나 같다.
+2. **복구**(= 서버 시작 경로): 색인의 `journals(path, off)`부터 일지 꼬리를 읽어 넣는다. 찢긴 마지막 줄은 자르고, seq 빈틈 뒤 줄은 미승인으로 보고 `.jadecode/recovery/`로 옮긴다. 색인이 깨졌으면 묻지 않고 다시 만든다. 일지 자체가 줄어든 것(바깥 훼손)은 고치지 않고 드러낸다. `kill -9` 65회 전부 복구, 승인 손실 0[S5 H1].
+3. **빈 색인 채우기**: WAL을 끄고 넣고 끝나면 WAL로 돌린다(100만 건 15초 → 3.6초).
+4. **서버의 `task.md` 쓰기**: 다시 읽어 비교 + 맞바꾸기(Linux `renameat2(RENAME_EXCHANGE)`, macOS `renamex_np(RENAME_SWAP)`). 밀려난 내용이 서버가 알던 해시와 다르면 경합으로 보고 되돌린 뒤 다시 한다. 그냥 임시 파일 + rename은 동시 편집에서 에이전트 편집을 잃었다(34/338 → 0). macOS 쪽은 [구현 중 확인].
+5. **파일 감시**: 카드·프로젝트 폴더를 비재귀로 본다(워크트리 안은 안 봄). 읽기 계열 알림은 무시하고(서버 자신의 읽기가 되먹임 고리를 만듦), 알림은 "다시 확인" 신호로만 쓴다. 자기 쓰기 구별은 시간 창이 아니라 서버가 마지막으로 쓴 내용 해시로 하고, 해시 비교와 서버 쓰기는 같은 쓰기 스레드에서 차례로 처리한다. 작업 폴더 경로는 `canonicalize`한다. 몰아치기 편집은 마지막 상태 하나로 합쳐진다.
+6. **오프라인 변경**: 서버가 꺼진 동안의 `task.md` 변경(또는 rename 뒤 이벤트 전에 죽은 경우)은 시작할 때 파일을 정본으로 받아들이고 `card.reconciled`로 남긴다. 단 상태 칸의 단계가 종료 조건 없이 앞으로 갔으면 배지 "검사 필요"를 달고 오케스트레이터를 깨운다(되돌리지 않음). 살아 있을 때 바깥에서 상태 칸을 바꾼 것만 검사·거절 대상이다.
+
+- `task.md` 쓰기 규칙: 본문은 누구나 고친다(서버는 `card.file_changed`를 낸다). 앞머리 `jadecode:` 묶음은 서버만 쓴다. 살아 있는 동안 다른 쓰기가 그것을 바꾸면 API 호출로 보고 검사해 받아들이거나, 거절하고 되돌린 뒤(본문은 유지) `card.state_change_rejected`를 남긴다.
+- 삭제·이름 바꾸기: `task.md`가 사라지면 카드를 지우지 않고 `card.file_missing`(배지)으로 두고 오케스트레이터를 깨운다. 카드 폴더 이름이 바뀌면 앞머리 ULID로 다시 잇는다.
+- 요구 충족: Q3 ○, Q22 ○, 늦게 붙은 구독자 ○, 카드 보관 때 일지가 카드와 함께 `arxiv/`로 간다 ○.
+- 남은 위험: Mac(FSEvents 지연·합침, APFS `fsync` vs `F_FULLFSYNC`) [구현 중 확인]. 실제 전원 손실은 시험하지 못했다. 에이전트가 제자리(`O_TRUNC`)로 쓰면 맞바꾸기 뒤의 쓰기가 밀려난 inode로 갈 수 있다(Claude Code Write·Edit 방식 [구현 중 확인]).
+- 비용: M. 시제품(Rust 약 2,100줄)이 있다.
 
 ### B3. 내장 메시지 브로커 (NATS JetStream 등) + 파일
 
-- 장점: 커서가 있는 영구 스트림, 주제 와일드카드, 재전송을 공짜로 얻는다. 나중에 여러 머신으로 넓히기 쉽다.
-- 단점: 프로세스·저장소가 하나 더 생기고, 브로커 저장소가 사실상 두 번째 정본이 된다. 사람 한 명·머신 한 대인 첫 버전에는 과하다. "파일에서 다시 만들기"를 따로 만들어야 하는 것은 B2와 같다.
-- 비용: M + 운영 부담.
+- 장점: 커서가 있는 영구 스트림, 주제 와일드카드, 재전송을 공짜로 얻는다.
+- 단점: 브로커 저장소가 두 번째 정본이 된다. 첫 버전에 과하다. B2가 같은 성질을 실측으로 보였으므로 필요 없다[S5].
 
 ### 추천: B2
 
-이벤트 일지 = 파일이라 SPEC의 두 조건을 한 장치로 채운다. 언어는 서버·클라이언트가 프로토콜 타입을 나눠 쓰도록 Rust를 추천한다(`questions.md` Q1에서 사용자에게 묻는다). 이 갈래의 구조는 언어와 무관하다.
+#### 오케스트레이터 깨우기 (Q5와 연결) [S3]
 
-#### 오케스트레이터 깨우기 (Q5와 연결)
+오케스트레이터도 A2 드라이버로 도는 인스턴스다. 서버는 오케스트레이터가 구독한 주제에서 "깨울 이벤트"가 오면 모아서(0.3초) **다이제스트 사용자 턴**으로 넣는다. 오케스트레이터가 일하는 중이면 그 턴이 끝날 때까지 쌓아 두었다가 한 번에 넣는다. 오케스트레이터는 다이제스트의 마지막 seq를 `ack`로 기록한다. 실측: 다이제스트 58개 전부 정확히 ack, 깨우는 이벤트 130건 중 빠짐·중복 0, 한가할 때 서버·CLI 지연 0.3초 남짓(모델 첫 응답 중앙값 2.06초)[S3 H2~H4].
 
-오케스트레이터도 A2 드라이버로 도는 인스턴스다. 서버는 오케스트레이터가 구독한 주제에서 "깨울 이벤트"(질문·오류·막힘·종료 조건 충족·인스턴스 종료·사람 말)가 오면 모아서 **다이제스트 사용자 턴**으로 넣는다. 오케스트레이터가 일하는 중이면 그 턴이 끝날 때까지 쌓아 두었다가 한 번에 넣는다. 오케스트레이터는 다이제스트의 seq까지 읽었다고 기록한다. 그래서 "무엇을 받았는지"가 이력에 남고, 놓친 신호는 seq 차이로 드러난다. → 스파이크 S3
+스파이크가 더한 규칙:
+
+1. 턴 종료 자동 기록(워커 턴이 메시지 도구 없이 끝났을 때 마지막 응답을 `report(auto)`로 남김)은 **깨우지 않는** 이벤트다. 깨우는 것은 "워커가 `report(done)` 없이 한가함으로 넘어감·종료됨"일 때만이고, 직전에 오케스트레이터가 "기다려라"를 보낸 인스턴스의 무도구 턴은 깨우지 않는다(헛 깨우기 7건 관측).
+2. 재전달: 오케스트레이터 인스턴스가 바뀌면(죽음·세대 교체) 마지막 ack 뒤의 이벤트를 새 인스턴스에 다시 넣고, 앞에 "마지막 ack 이후 이 자리의 오케스트레이터가 한 행동" 목록을 붙인다. 전달은 at-least-once이고 중복 행동은 이 목록으로 막는다(1회 시험에서 중복 0).
+3. 오케스트레이터 → 인스턴스 메시지는 모두 `reply_to`(선택)를 받는다. 사람 결정을 워커에 전할 때는 원래 제안의 seq를 잇는다.
+4. 같은 다이제스트 안의 사건끼리 엮어 판단하는 이득이 있었다. 모으기 대기는 설정값으로 둔다.
 
 ---
 
@@ -128,150 +207,141 @@ SPEC의 두 조건이 이 갈래를 정한다. "카드 폴더의 파일이 정�
 
 SPEC: 봇 정의 = 폴더(에이전트 종류·모델, 역할 지침, 스킬, 기억, 권한 정책). 인스턴스는 시작 시점 사본. 자기개선은 지침·스킬·기억만 바꾸고, 권한·사람 절차·예산은 바꾸지 못한다. 변경은 버전으로 남고 사람이 되돌릴 수 있다.
 
-### C1. 봇 = git 폴더, 개선 = 카드 (추천)
+### C1. 봇 = git 폴더, 개선 = 카드 (추천, 평가 방식은 스파이크 뒤 수정)
 
 - 저장
-  - `bots/`는 git 레포 하나다. `bots/<bot>/bot.toml`(에이전트 종류·모델·CLI 버전), `instructions.md`, `skills/`, `memory/`.
-  - 사람만 쓰는 값(권한 정책, 봇별 예산, 봇 수 상한, 예산 총량)은 `bots/` 밖의 `policy/`에 둔다. 개선 고리는 `policy/`에 쓸 권한이 없고, 서버는 개선 커밋의 변경 경로가 `instructions.md`·`skills/`·`memory/` 안인지 검사해 밖이면 거부한다. 경계가 파일 경로로 강제된다.
-  - 버전 = 커밋, 되돌리기 = 그 봇 경로의 revert 커밋. 봇 화면의 "버전·지표·되돌리기"는 git 로그 + 지표 색인이다.
-- 인스턴스 사본: 인스턴스는 시작할 때 봇 커밋 해시를 기록하고, 그 커밋에서 실행용 묶음을 만든다(`.jadecode/instances/<id>/`). Claude Code에는 `--append-system-prompt-file`(지침·기억), `--plugin-dir`(스킬을 플러그인 꼴로), `--settings`(권한 정책 → allow/deny), `--mcp-config`(jadecode 도구), `--model`로 넣는다(스파이크 S1에서 확인). 실행 중 봇이 바뀌어도 이미 뜬 인스턴스는 자기 해시를 쓴다.
+  - `bots/`는 git 레포 하나다. `bots/<bot>/bot.toml`(에이전트 종류·모델·CLI 판), `instructions.md`, `skills/`, `memory/`.
+  - 사람만 쓰는 값(권한 정책, 봇별 예산, 봇 수 상한, 예산 총량, 사람 절차, 평가 지표 목록)은 `bots/` 밖의 `policy/`에 둔다[확정 A5]. 서버는 개선 커밋의 변경 경로가 `instructions.md`·`skills/`·`memory/` 안인지 검사해 밖이면 거부하고, 모든 봇의 권한 정책은 `policy/` 쓰기를 deny한다.
+  - 버전 = 커밋, 되돌리기 = 그 봇 경로의 revert 커밋.
+- 인스턴스 사본: 인스턴스는 시작할 때 봇 커밋 해시를 기록하고 그 커밋에서 실행 묶음을 만든다(`.jadecode/instances/<id>/`, `git show <커밋>:<경로>`로 충분했다[S9]). Claude Code에는 `--append-system-prompt-file`(지침·기억), `--plugin-dir`(스킬을 플러그인 꼴로, init에 `<플러그인>:<스킬>`로 보임), `--settings`(권한), `--mcp-config`, `--model`로 넣는다. 다섯 플래그 모두 동작했다[S1 H4]. resume 때 기본 스냅숏이 옛 지침을 유지하므로 "실행 중 봇이 바뀌어도 뜬 인스턴스는 영향받지 않는다"가 그대로 선다[S1 H3].
+- 시작 스냅샷: 카드가 시작될 때 레포별 시작 커밋, `task.md` 사본, 공유 입력 문서 해시, 첫 브리프, 단계 종료 조건, 봇 커밋·모델·CLI 판·정책 커밋, 선행 조건을 이벤트로 남긴다(목록은 `spike-results.md` S9). **지금 워크스페이스 기록으로는 끝난 카드를 되살릴 수 없었으므로**, 첫 버전부터 남긴다[S9 H1].
 - 고리
-  - 서버는 "카드 K개 끝남"과 "한가함"을 세어 오케스트레이터에게 **개선 카드**를 발행하라고 신호한다. 개선 카드는 특수 프로젝트(`_improve`)의 일반 카드다. 보드·이력·예산·핸드오프를 그대로 쓴다.
-  - 개선 카드의 일: 끝난 인스턴스 기록 흡수 → 변경안 커밋(가지) → 평가 세트 재실행(스파이크 S9) → 지표 비교 → 나아졌으면 서버 API `bot.publish`로 기본 가지에 반영. 사람 승인 없음.
+  - 서버는 "봇별 카드 K개 끝남"과 "한가함"을 세어 오케스트레이터를 깨운다. 오케스트레이터는 **개선 카드**를 발행한다. 개선 카드는 특수 프로젝트(`_improve`)의 일반 카드다.
+  - 개선 카드의 일(스파이크 뒤 수정, [라운드 B1]):
+    1. 끝난 인스턴스 기록 흡수 → 변경안 커밋(가지). 변경안에 "무엇이 달라져야 하는지"(겨냥한 행동 지표)를 함께 적는다. 지표는 `policy/`의 지표 목록에서 고른다.
+    2. **겨냥한 지표**로 견준다: 작은 평가 카드 몇 개의 재실행에서 그 지표가 달라졌는지 본다. 결과 점수 재실행 비교는 판별력이 없었다(같은 버전 안 흔들림 17.5점 > 버전 간 8.75점, 버전당 약 17회 필요 추정). 반면 바꾼 문단이 겨냥한 "더한 테스트 수"는 두 카드 모두에서 새 버전 전부 > 옛 버전 전부였다[S9 H3].
+    3. 결과 점수(수용 테스트·단계 통과·리뷰 봇 판정)는 "나빠지지 않았는가"의 회귀 검사로만 쓴다. 평가 카드는 바꾼 행동을 이미 요구하지 않는 것으로 고른다(천장 효과).
+    4. 통과하면 `bot.publish`로 기본 가지에 반영한다(사람 승인 없음).
+    5. 반영 뒤 같은 봇의 실제 카드 K개 기록 지표(단계 통과율, 리뷰 루프, 사람 개입, 되돌림)를 이전 버전과 견주고, 나빠지면 서버가 자동으로 되돌린다.
+  - 평가 재실행도 사용자 구독의 CLI로 돈다[확정 A9]. 장난감 카드 1회가 채점 포함 환산 약 \$0.20·1분이었고 실제 카드는 수십 배라, 재실행은 회귀 검사용 작은 카드로 한정한다.
   - 봇 복제·분화 = 새 봇 폴더를 만드는 커밋. 서버가 `policy/`의 봇 수 상한을 검사한다.
-- 요구 충족: 버전·되돌리기 ○, 경계 강제 ○(경로 검사), 사본 ○(커밋 해시), 개선이 보드에 보임 ○, 오케스트레이터 자기개선도 같은 장치 ○.
-- 위험: 평가 재실행의 비용과 판별력(같은 버전도 실행마다 결과가 다름). 이것이 자기개선 전체의 핵심 위험이다. → S9
-- 비용: M(평가 재실행 장치 제외), 평가 재실행 +M.
+- 요구 충족: 버전·되돌리기 ○, 경계 강제 ○(경로 검사 + `policy/` 쓰기 deny), 사본 ○(커밋 해시 + 스냅숏), 개선이 보드에 보임 ○, 오케스트레이터 자기개선도 같은 장치 ○.
+- 위험: 겨냥 지표가 작은 표본에서도 가르는지는 2카드 × 2회로만 봤다. 개선 봇이 자기에게 유리한 지표를 고를 위험 → 지표 목록을 사람이 정하는 안 [라운드 B1]. 실제 크기 카드의 비용·흔들림은 시작 스냅샷을 남긴 첫 카드들로 [구현 중 확인].
+- 비용: M(장치), 평가 재실행·자동 되돌림 +M.
 
 ### C2. 서버 내장 개선 엔진
 
-- 서버가 스케줄러·평가 파이프라인을 직접 갖는다. 봇 버전은 내용 주소 스냅샷(해시 디렉터리), 평가는 서버가 고정 절차로 돌린다.
-- 장점: 고리가 결정적이고 예측 가능하다. 오케스트레이터의 판단에 기대지 않는다.
-- 단점: SPEC은 오케스트레이터가 고리를 돌리고 평가 세트도 고른다고 한다(Q17·Q26·Q28). 개선 절차 자체를 개선할 수 없다(서버 코드라서). 카드·보드와 별도인 두 번째 작업 장치가 생긴다.
-- 비용: M~L.
+- 서버가 스케줄러·평가 파이프라인을 직접 갖는다. 고리가 결정적이지만, SPEC은 오케스트레이터가 고리를 돌리고 평가 세트도 고른다고 한다(Q17·Q26·Q28). 개선 절차 자체를 개선할 수 없다.
+- 스파이크 뒤: 자동 되돌림(C1 5단계)은 서버 기능으로 두지만, 고리 전체를 서버로 옮길 이유는 생기지 않았다.
 
 ### C3. 외부 프롬프트 최적화 프레임워크 (DSPy·GEPA 류)
 
-- 장점: 지침 문장 최적화에 검증된 방법이 있다.
-- 단점: 대상이 "프롬프트 + 고정 평가 함수"라서 스킬·기억 폴더나 코딩 카드처럼 길고 비싼 평가에 맞지 않는다. Python 의존이 생긴다.
-- 쓰임: C1 개선 카드 안에서 개선 봇이 고를 수 있는 기법 하나로 둔다. 장치로는 채택하지 않는다.
+- 대상이 "프롬프트 + 싸고 결정적인 평가 함수"라서, 평가 1회가 비싸고 흔들리는 코딩 카드[S9]에는 더 맞지 않는다. 개선 봇이 고를 수 있는 기법 하나로만 둔다.
 
 ### 추천: C1
 
-개선을 카드로 만들면 새 장치 없이 SPEC의 "오케스트레이터가 돌린다·보드에 보인다·예산 안에서"가 따라온다. 경계는 폴더 분리 + 서버의 경로 검사로 강제한다.
+장치(봇 커밋 사본, `bots/` git, 경로 검사, 개선 = 카드)는 실측으로 섰다[S9]. 바뀐 것은 평가 방식이다: 결과 점수 재실행 비교 → 겨냥한 행동 지표 + 회귀 검사 + 반영 후 자동 되돌림. 사용자 확인은 [라운드 B1].
 
 ---
 
 ## ④ 클라이언트 UI·프로토콜
 
-조건: 네이티브 UI, 웹뷰 절대 금지(터미널·문서·diff 포함). 순서 Mac → (Linux 서버) → Android → iPad. Mac 첫 화면 다섯 가지: 칸반, 카드 상세(markdown `task.md`, 경로, 메시지 이력), 오케스트레이터 대화, 봇 목록, 인스턴스 붙기(대화 화면, 터미널).
+조건: 네이티브 UI, 웹뷰 절대 금지(터미널·문서·diff 포함). 순서 Mac → (Linux 서버) → Android → iPad. Mac 첫 화면 다섯 가지: 칸반, 카드 상세(markdown `task.md`, 경로, 메시지 이력), 오케스트레이터 대화, 봇 목록, 인스턴스 붙기(첫 버전은 대화 화면[확정 A10]).
 
-어느 후보든 **클라이언트 코어**(프로토콜 타입, 연결·재연결, 스냅샷 + seq 캐시, 구독)는 UI와 무관한 Rust 크레이트로 둔다. 서버와 같은 타입을 쓰고, UI 수단을 바꿀 때 버리지 않는다.
+어느 후보든 **클라이언트 코어**(프로토콜 타입, 연결·재연결, 스냅샷 + seq 캐시, 구독)는 UI와 무관한 Rust 크레이트로 둔다.
 
 ### UI 후보
 
-| | D1. GPUI + gpui-kit (추천: Mac 초안) | D2. nsh 하나로 4플랫폼 | D3. 플랫폼별 네이티브 + Rust 코어 |
+| | D1. GPUI + gpui-kit (확정: Mac) | D2. nsh 하나로 4플랫폼 | D3. 플랫폼별 네이티브 + Rust 코어 |
 |---|---|---|---|
-| 구성 | Zed의 GPUI, longbridge/gpui-kit(markdown·diff·에디터) | longbridge/nsh: Rust 엔진 + 플랫폼 네이티브 뷰(AppKit/UIKit/Android View). 화면은 Rust 또는 TSX(QuickJS) | Mac·iPad SwiftUI + SwiftTerm, Android Compose + Termux terminal-view, 코어는 UniFFI |
+| 구성 | Zed의 GPUI, longbridge/gpui-kit(markdown·diff·에디터) | longbridge/nsh: Rust 엔진 + 플랫폼 네이티브 뷰 | Mac·iPad SwiftUI + SwiftTerm, Android Compose + Termux view, 코어는 UniFFI |
 | macOS | 정식 | AppKit | 정식 |
 | Android | 커뮤니티 `gpui-mobile` 0.1뿐 | Android View | 정식 |
 | iPad | 본가 `gpui_ios` 실험적(2026-10) | UIKit | 정식 |
-| 웹뷰 | 없음(gpui-kit의 wry 크레이트는 넣지 않음) | 없음(`<WebView>` 요소를 쓰지 않으면) | 없음 |
-| 터미널 | Zed `terminal_view` 이식 또는 커뮤니티 `gpui-terminal`(성숙도 미확인) | 내장 `Terminal`(vte, iOS·Android 동작, 에뮬레이터 교체 가능) | SwiftTerm, Termux view |
+| 웹뷰 | 없음(gpui-kit의 wry 크레이트는 넣지 않음) | 없음(`<WebView>`를 쓰지 않으면) | 없음 |
+| 터미널 | `alacritty_terminal` + GPUI 격자(berth 데스크톱에 구현 있음, 위 「berth와의 관계」) | 내장 `Terminal`(vte) | SwiftTerm, Termux view |
 | markdown·diff | 있음·있음 | `TextView`·`DiffView` 내장 | 라이브러리 있음·직접 구현 |
-| 성숙도 | 중간, 1.0 전. Zed·Longbridge Pro 출시 | 매우 초기: 첫 커밋 2026-10-14, v0.4.0(11-04) | 높음 |
-| 언어 | Rust | Rust(+TSX 선택) | Swift + Kotlin + Rust |
-| 비용(Mac 첫 화면) | M | M(+API 변화 대응) | M(Mac), 이후 Android가 사실상 두 번째 앱 |
+| 성숙도 | 중간, 1.0 전 | 매우 초기(v0.4.0, 2026-11) | 높음 |
 
-- MyGo(egoist/mygo, Go)는 GPU 직접 그리기 모드가 있지만 모바일 백엔드가 없어 4플랫폼 경로에서 뺀다. Dioxus는 기본 데스크톱이 웹뷰라 뺀다. Flutter·Compose Multiplatform·Slint는 쓸 만한 터미널 위젯이 없거나 정체돼 뺀다.
-- 한국어 입력(IME 조합)이 대화 화면·터미널에서 되는지가 실사용에서 큰 갈림길이다. 스파이크 통과 기준에 넣는다.
+- 결정: **Mac은 D1로 시작하고, nsh는 Android 단계에서 재평가**한다[확정 A2]. S6(GPUI)·S7(nsh)은 돌리지 않았다. Mac 화면 다섯 가지·한국어 IME·터미널 렌더는 Mac 클라이언트 첫 카드에서 [구현 중 확인]. berth 데스크톱의 GPUI 코드(터미널 격자, IME 입력창, 대화 화면)를 출발점으로 쓰면 이 위험이 크게 준다[라운드 B3].
+- MyGo(모바일 없음), Dioxus(기본 데스크톱 웹뷰), Flutter·Compose MP·Slint(터미널 위젯 없음·정체)는 뺀 그대로다.
 
-추천: **Mac 초안은 D1**. 첫 화면 다섯 가지에 필요한 부품(markdown·diff·에디터)이 가장 많이 검증돼 있다. 모바일은 Android 착수 직전에 D2(nsh)를 다시 평가하고, 그때도 미숙하면 D3로 간다. 클라이언트 코어를 분리해 두므로 갈아타는 비용은 화면 코드에 한정된다. D2를 지금 바로 고르는 선택지도 사용자에게 묻는다(`questions.md` Q2). 스파이크 S6(GPUI)·S7(nsh)을 함께 돌려 판단 근거를 만든다.
+### 프로토콜: P1. JSON-RPC 2.0 over WebSocket (추천, 그대로)
 
-### 프로토콜 후보
-
-| | P1. JSON-RPC 2.0 over WebSocket (추천) | P2. gRPC(protobuf) | P3. REST + SSE |
+| | P1. JSON-RPC 2.0 over WebSocket | P2. gRPC(protobuf) | P3. REST + SSE |
 |---|---|---|---|
-| 요청·응답 | `method.name` + JSON | 서비스 정의 | HTTP 동사 |
 | 이벤트 | 같은 연결로 푸시(`events.subscribe{topics, from_seq}`) | 서버 스트리밍 | SSE(단방향) |
-| 터미널 바이트 | 별도 WebSocket(일회용 티켓, rex 방식) | 양방향 스트림 | 어려움 |
-| 에이전트·스크립트 친화 | 높음: JSON Schema 자기 서술(`api.schema`), CLI·MCP가 같은 메서드를 그대로 감쌈 | 중간: 도구가 필요 | 높음 |
-| 모바일 | 쉬움 | 쉬움 | 쉬움 |
-| 비용 | S | M | S(대신 양방향·터미널이 불편) |
+| 터미널 바이트 | 별도 WebSocket(일회용 티켓) | 양방향 스트림 | 어려움 |
+| 에이전트·스크립트 친화 | 높음: JSON Schema 자기 서술 | 중간 | 높음 |
+| 비용 | S | M | S |
 
-- 전송: 로컬은 Unix 소켓(권한 0600)과 루프백, 원격은 같은 프로토콜을 Tailscale 쪽 리스너로(⑤).
-- 에이전트의 서버 접근: 인스턴스마다 jadecode MCP 서버(stdio)를 붙인다. 인스턴스 토큰은 환경변수로 받고, 역할(오케스트레이터·워커)에 따라 도구 목록이 다르다. 사람·스크립트용 `jadecode` CLI도 같은 메서드를 감싼다. 에이전트 지침에는 "CLI 대신 MCP 도구"를 기본으로 적고, MCP를 못 쓰는 에이전트는 CLI를 쓴다.
-- 스키마는 서버 Rust 타입에서 뽑고(`schemars`), 서버·클라이언트·MCP가 같은 타입을 쓴다. 판(revision)과 최소 판을 `server.version`으로 알린다(rex 방식).
-
-추천: **P1**.
+- 전송: 로컬은 Unix 소켓(0600)과 루프백, 원격은 Tailscale 쪽 리스너(⑤). S5 시제품이 WebSocket JSON-RPC 구독을 이 모양으로 이미 구현했다.
+- 에이전트의 서버 접근: 인스턴스마다 jadecode MCP 서버(stdio). 인스턴스 토큰은 환경변수(`--mcp-config`로 전달 확인[S1 H4]). 역할별 도구 목록. MCP 도구는 처음부터 목록에 있지 않고 `ToolSearch`로 불러와 쓰지만, 지침에 도구 이름을 적으면 haiku도 바로 찾았다[S1]. 사람·스크립트용 `jadecode` CLI도 같은 메서드를 감싼다.
+- 메시지 칸에 `reply_to`·`escalated_from`·`actor`를 둔다[S3].
 
 ---
 
 ## ⑤ 원격 접속·배포
 
-첫 버전은 한 컴퓨터에 서버와 프론트가 함께 있다. 원격은 Tailscale 같은 방식이 유력하다(Q37).
+첫 버전은 한 컴퓨터에 서버와 프론트가 함께 있다. 원격은 Tailscale, 에이전트는 서버 머신에서만[확정 A8].
 
-### E1. 로컬 우선 + 시스템 Tailscale 위 리스너 (추천)
+### E1. 로컬 우선 + 시스템 Tailscale 위 리스너 (확정)
 
 - 첫 버전: Unix 소켓 + 루프백만 연다. 인증은 소켓 권한(같은 OS 사용자)과 기기 토큰.
-- 원격(Android·iPad 단계): 서버가 tailnet 주소에 리스너를 더 열고, 붙는 쪽의 신원을 시스템 `tailscaled` LocalAPI `whois`로 확인한다. 기기는 처음 한 번 짝짓기(QR에 주소 + 일회용 토큰)로 등록한다. rex의 `tailnet://` 리스너와 같은 방식이다.
-- 장점: 서버 코드에 VPN을 넣지 않는다. 사용자는 이미 Tailscale을 쓸 가능성이 높다.
-- 위험: 서버 머신에 Tailscale 설치가 필요하다. 신원 확인 코드가 Tailscale API에 기댄다.
-- 비용: S(첫 버전 0, 원격 단계 S).
+- 원격(Android·iPad 단계): 서버가 tailnet 주소에 리스너를 더 열고, 붙는 쪽의 신원을 시스템 `tailscaled` LocalAPI `whois`로 확인한다. 기기는 처음 한 번 짝짓기(QR에 주소 + 일회용 토큰)로 등록한다. 확인 스파이크 S10은 Android 단계 전에 [라운드 B4].
+- 비용: 첫 버전 0, 원격 단계 S.
 
 ### E2. tsnet 내장
 
-- 서버가 스스로 tailnet 노드가 된다(rex `--tailscale`). 시스템 Tailscale이 없어도 된다.
-- 단점: tsnet은 Go 라이브러리다. Rust 서버면 libtailscale(C) 바인딩이나 Go 사이드카가 필요하다. 첫 버전에 필요 없다.
-- 비용: M.
+- 서버가 스스로 tailnet 노드가 된다(rex `--tailscale`, berth도 이 방식). tsnet은 Go 라이브러리라 Rust 서버면 libtailscale(C) 바인딩이나 Go 사이드카가 필요하다. 첫 버전에 필요 없다. berth를 흡수하면(라운드 B3 가) berth의 tsnet 경험을 참고해 원격 단계에 다시 볼 수 있다.
 
 ### E3. SSH 터널 또는 자체 TLS + 토큰
 
-- SSH는 데스크톱엔 쉽지만 Android·iPad 클라이언트에서 소켓 포워딩이 불편하다(rex iOS도 SSH 포워딩을 지원하지 않는다). 자체 TLS는 인증서·포트 노출 관리가 사람 몫이다.
-- 쓰임: Tailscale을 못 쓰는 환경의 예비로만 둔다.
+- Android·iPad에서 소켓 포워딩이 불편하다. 예비로만 둔다.
 
-### 배포 (세 후보 공통)
+### 배포 (공통)
 
 - Mac: 클라이언트 `.app`, 서버는 같은 묶음 안의 바이너리를 LaunchAgent(launchd 사용자 서비스)로 띄운다. 앱을 닫아도 서버와 인스턴스는 돈다. 첫 배포는 직접 빌드·Homebrew cask, 자동 업데이트(Sparkle)는 나중.
-- Linux: 단일 바이너리 + systemd 사용자 유닛.
-- 데이터 형식 판을 파일에 적고, 서버는 자기보다 새 판을 만나면 덮어쓰지 않고 멈춘다(rex 방식).
-- 서버 업그레이드 때 인스턴스: A2에서는 프로세스가 서버의 자식이라 업그레이드 = 인스턴스 재시작(`--resume`)이다. 일하는 중인 턴이 끊기므로 업그레이드는 모든 인스턴스가 한가할 때 하거나, 인스턴스 프로세스를 별도 감독 프로세스에 두는 방식을 그릴링에서 정한다(herdr live handoff 참고).
-
-추천: **E1**. 에이전트는 서버 머신에서만 돈다(다른 머신 실행은 사용자 확인, `questions.md` Q25).
+- Linux: 단일 바이너리 + systemd 사용자 유닛. 인스턴스 프로세스는 `systemd-run --user --scope`로 cgroup에 넣어 고아 도구 프로세스를 치운다[S1].
+- 데이터 형식 판을 파일에 적고, 서버는 자기보다 새 판을 만나면 덮어쓰지 않고 멈춘다.
+- 서버 업그레이드 때 인스턴스: 프로세스가 서버의 자식이라 업그레이드 = 인스턴스 재시작(`--resume`)이다. 일하는 중인 턴이 끊기므로 모든 인스턴스가 한가할 때 하는 것을 기본으로 한다(그릴링 과제).
 
 ---
 
 ## 추천 구성 한눈에
 
 ```
- Mac 클라이언트 (GPUI)          Android·iPad (나중: nsh 또는 네이티브)
-   └ 클라이언트 코어(Rust) ─┐    └ 클라이언트 코어(Rust)
+ Mac 클라이언트 (GPUI, berth 데스크톱 코드 출발점 후보)      Android·iPad (Android 단계에서 nsh 재평가)
+   └ 클라이언트 코어(Rust) ─┐                              └ 클라이언트 코어(Rust)
                             │  JSON-RPC over WebSocket / Unix 소켓 (원격: tailnet 리스너)
  ┌──────────────────────────▼─────────────────────────────────────────┐
  │ jadecode 서버 (Rust, launchd/systemd 사용자 서비스)                     │
- │  API · 구독(seq, 주제 앞부분 일치) · 사람 절차 · 종료 조건 검사 · 예산     │
- │  이벤트 일지 쓰기 ──► work/<p>/<c>/events.jsonl, task.md 앞머리         │
+ │  API · 구독(seq, 마디 단위 앞부분 일치) · 사람 절차 · 종료 조건 · 예산     │
+ │  단일 쓰기 스레드: 일지 fsync → 색인 커밋 → 승인                          │
+ │    └► work/<p>/<c>/events.jsonl, task.md 앞머리(맞바꾸기 쓰기)          │
  │  색인 SQLite (지워도 재생성)                                             │
- │  드라이버: Claude Code `claude -p` stream-json (ACP 모양 인터페이스)     │
- │  jadecode MCP 서버 ◄── 인스턴스의 report/ask/propose/error, 권한 RPC    │
+ │  드라이버: `claude -p` stream-json, 격리 플래그, 인스턴스 임대(R-a)       │
+ │  jadecode MCP 서버 ◄── report/ask/propose/error, 권한 RPC(25분 상한)   │
  └───────┬───────────────────────────────┬────────────────────────────┘
-         │ 하위 프로세스 (cwd = 카드 폴더)   │ 봇 사본 = bots/ 커밋 해시
+         │ 하위 프로세스 (cwd = 카드 폴더)   │ 봇 사본 = bots/ 커밋 해시 + 시작 스냅샷
    오케스트레이터 인스턴스, 워커 인스턴스      bots/ (git, 자기개선 대상) · policy/ (사람만)
 ```
 
 ### 오늘의 수동 운영 문제를 추천 구성이 푸는 방법
 
-| | 푸는 장치 | 남는 위험 | 확인 스파이크 |
+| | 푸는 장치 | 스파이크 결과 | 남는 것 |
 |---|---|---|---|
-| R1 cwd | 서버가 카드 폴더를 cwd로 하위 프로세스를 띄우고 `--add-dir`로 레포 워크트리를 더한다. 워크트리는 카드 생성 API가 연다(지금 `new-work`가 하는 일) | 워크트리 밖 경로 접근이 권한 요청이 되는지 | S1, S2 |
-| R2 보고 | MCP 도구 호출 = 메시지 이벤트. 받는 쪽은 구독·이력으로 읽는다 | 에이전트가 도구를 안 쓰고 끝내는 경우 → 턴 종료(`result`) 때 마지막 응답을 `report`로 자동 기록 | S3 |
-| R3 막힘 | 권한 정책을 설정 파일로 미리 넣고, 규칙 밖 요청은 권한 RPC → 인스턴스 "막힘" 배지 + 오케스트레이터 깨우기 + 사람 알림. 시간 넘기면 거부 | 다른 git 루트 이동 같은 신뢰 확인 창이 비대화 모드에서 어떻게 나오는지 | S2 |
-| R4 id | jadecode 인스턴스 id(ULID)는 서버가 정하고, 에이전트 세션 id는 매핑일 뿐. 재시작은 `--resume`(fork 없음) | 사람 붙기(터미널로 넘기기) 왕복 때 세션 id 유지 | S1, S4 |
-| R5 명단 | 인스턴스·카드·메시지는 서버 상태 + 일지 파일. 허브 문서를 손으로 적을 일이 없다 | 색인 재구성 시간 | S5 |
+| R1 cwd | 서버가 카드 폴더를 cwd로 띄우고 `--add-dir`로 워크트리를 더한다. 워크트리는 카드 생성 API가 연다 | 추가 폴더 안 쓰기는 승인 없이, 밖은 RPC 또는 거부[S1 H4, S2 H1·H3] | 봇 지침의 경로 형식(`cd` 대신 cwd 기준 경로)[S9] |
+| R2 보고 | MCP 도구 호출 = 메시지 이벤트, 받는 쪽은 구독·이력으로 | 완료 카드 26/26 `report(done)`, 다이제스트 빠짐 0[S3] | 자동 기록은 깨우지 않음[S3] |
+| R3 막힘 | 정책을 설정 파일로 넣고, 규칙 밖은 권한 RPC → "막힘" + 오케스트레이터 깨움 + 사람 알림, 25분 뒤 거부 | 오늘 멈춘 다섯 경우 모두 RPC 또는 거부, 조용한 멈춤 0[S2] | 권한 서버 장애는 서버 기록과 프로세스 감시로 판정[S2]. 터미널 넘기기 동안엔 TUI 권한 창(훅으로 감지)[S4] |
+| R4 id | jadecode 인스턴스 id + 서버가 정한 세션 id, 재시작은 같은 폴더에서 `--resume` | 왕복·kill 뒤에도 id 하나, 사본 0[S1 H3, S4] | 동시 열기는 claude가 막지 않음 → 인스턴스 임대(R-a)와 감지(R-c·R-d)[S4] |
+| R5 명단 | 인스턴스·카드·메시지는 서버 상태 + 일지 파일 | 재구성 2초 안, `kill -9` 복구 손실 0[S5] | Mac 수치 [구현 중 확인] |
 
-## 조사 근거 (2026-11-08)
+## 조사 근거
 
-- herdr v0.9.5 소스(`/tmp/herdr-research/src`): 크레이트 2개(본체 약 29만 줄, lib 타깃 없음 / `ghostty-vt`), 이벤트 메모리 링 512개·연결당 100ms 폴링(`src/api/event_hub.rs`, `src/api/server.rs`), 상태 판독 TOML 매니페스트 24개 에이전트(`src/detect/manifests/`), Claude 통합 v11은 SessionStart 훅만, 재시작 때 셸에 resume 명령 타이핑(`src/agent_resume.rs`), 실험적 live handoff(`src/server/handoff.rs`), Android 미지원, 외부 PR 자동 닫음(`CONTRIBUTING.md`), 2026-05~10 릴리스 34회.
-- rex 문서(`/tmp/rexdocs/md`): Unix 소켓·tailnet·tsnet 리스너, JSON Schema 자기 서술 API(`/llms.txt`), 빈틈없는 seq + 스냅샷(이력·재생 없음, 8MiB 뒤처지면 끊음), OSC 7501 Program Status Protocol rev 0.4, 승인 API 없음, 인증은 연결 방식 기준, 소스·라이선스 공개 없음, Android 클라이언트 없음.
-- 에이전트 실행: Claude Code CLI 문서(headless, cli-reference, hooks, agent-sdk permissions·sessions, agent-view, legal-and-compliance), Codex app-server 문서, ACP 문서(agentclientprotocol.com). 세부는 `spikes.md`의 가설 칸에 옮겼다.
-- 클라이언트 UI: zed-industries/zed(`crates/gpui_ios`), longbridge/gpui-kit v0.9.0, longbridge/nsh v0.4.0, egoist/mygo, SwiftTerm, Slint 1.12, DioxusLabs/blitz. 2026-11-08 GitHub 조회 기준이고 로컬 빌드는 하지 않았다.
+- 1차 스파이크(2026-11-08~09): `spike-results.md`. 원본은 `work/jadecode/1108-architecture/1108-spike-*/result.md`.
+- berth(2026-11-09): `repository/berth` README·`docs/protocol.md`·`desktop/README.md`·`internal/`·`desktop/src/` 읽음. 빌드·실행 안 함.
+- herdr v0.9.5 소스(`/tmp/herdr-research/src`, 2026-11-08): 크레이트 2개(본체 약 29만 줄, lib 타깃 없음 / `ghostty-vt`), 이벤트 메모리 링 512개·연결당 100ms 폴링, 상태 판독 TOML 매니페스트 24개 에이전트, Claude 통합 v11은 SessionStart 훅만, 재시작 때 셸에 resume 명령 타이핑, 실험적 live handoff, Android 미지원, 외부 PR 자동 닫음, 2026-05~10 릴리스 34회.
+- rex 문서(`/tmp/rexdocs/md`, 2026-11-08): Unix 소켓·tailnet·tsnet 리스너, JSON Schema 자기 서술 API, 빈틈없는 seq + 스냅샷(이력·재생 없음), OSC 7501 Program Status Protocol rev 0.4, 승인 API 없음, 소스·라이선스 공개 없음, Android 클라이언트 없음.
+- 에이전트 실행: Claude Code CLI 문서(headless, cli-reference, hooks, agent-sdk permissions·sessions, agent-view, legal-and-compliance), Codex app-server 문서, ACP 문서(agentclientprotocol.com).
+- 클라이언트 UI: zed-industries/zed(`crates/gpui_ios`), longbridge/gpui-kit v0.9.0, longbridge/nsh v0.4.0, egoist/mygo, SwiftTerm, Slint 1.12, DioxusLabs/blitz(2026-11-08 GitHub 조회).
