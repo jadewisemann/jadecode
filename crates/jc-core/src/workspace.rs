@@ -272,11 +272,23 @@ pub fn short_temp_root(prefix: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    let short = format!("/tmp/{prefix}{}-{}", std::process::id(), n);
-    if std::fs::create_dir_all(&short).is_ok() {
-        return PathBuf::from(short);
+    // 이름이 겹치면(이전 실행이 남긴 폴더) 안에 든 잠금 때문에 실패한다.
+    // ULID를 붙여 겹치지 않게 하고, 그래도 있으면 지우고 새로 만든다.
+    let short = format!("/tmp/{prefix}{}-{}-{}", std::process::id(), n, crate::ulid::new_id()[20..].to_lowercase());
+    let p = PathBuf::from(&short);
+    if p.exists() {
+        let _ = std::fs::remove_dir_all(&p);
     }
-    let fallback = std::env::temp_dir().join(format!("{prefix}{}-{}", std::process::id(), n));
+    if std::fs::create_dir_all(&p).is_ok() {
+        return p;
+    }
+    let fallback = std::env::temp_dir().join(format!(
+        "{prefix}{}-{}-{}",
+        std::process::id(),
+        n,
+        crate::ulid::new_id()[20..].to_lowercase()
+    ));
+    let _ = std::fs::remove_dir_all(&fallback);
     let _ = std::fs::create_dir_all(&fallback);
     fallback
 }

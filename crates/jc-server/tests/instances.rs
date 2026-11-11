@@ -251,3 +251,18 @@ async fn instance_start_with_dead_claude_fails_cleanly() {
     );
     t.abort();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn many_workspaces_do_not_collide() {
+    // 병렬 테스트가 서로 다른 워크스페이스를 써야 한다(잠금 충돌 방지).
+    let a = jc_core::short_temp_root("jcq");
+    let b = jc_core::short_temp_root("jcq");
+    assert_ne!(a, b);
+    let (mut wa, _) = Workspace::init(&a, "a").unwrap();
+    let (mut wb, _) = Workspace::init(&b, "b").unwrap();
+    // 둘 다 동시에 쓸 수 있어야 한다.
+    let mut sa = wa.store().unwrap();
+    let mut sb = wb.store().unwrap();
+    sa.append(vec![jc_core::NewEvent::new("global", "x", serde_json::json!({}))]).unwrap();
+    sb.append(vec![jc_core::NewEvent::new("global", "y", serde_json::json!({}))]).unwrap();
+}
