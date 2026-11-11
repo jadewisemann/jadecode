@@ -105,6 +105,20 @@
 - FSEvents 지연·합침, APFS `fsync` vs `F_FULLFSYNC`.
 - 카드 1,000개·이벤트 10만 건 재구성 시간(S5 Linux: 0.46~2.0초).
 
+## CI · 릴리즈
+
+`.github/workflows/ci.yml`(push·PR): 리눅스·macOS에서 server(GPUI 없이)·client(GPUI 포함)
+빌드+테스트, fmt+clippy. 다섯 잡 모두 통과(2026-11-11).
+
+`.github/workflows/release.yml`(태그 `v*` 또는 수동): `linux-x86_64`·`macos-aarch64`
+바이너리를 아카이브로 만들어 Draft Release에 붙인다(설치 스크립트·체크섬 포함).
+
+- 첫 릴리즈: **v0.1.0-alpha** — `jadecode-v0.1.0-alpha-{linux-x86_64,macos-aarch64}.tar.gz`(12MB/7MB)
+- 릴리즈 프로파일에서 debug 심볼을 빼고 strip+thin LTO → 로컬 609MB → 26MB
+- GPUI는 `jc-client`의 `ui` feature 뒤에 있다. 기본 빌드는 데이터 계층만이라 X11/Vulkan 없이도 된다.
+- CI에서 고친 것: macOS 유닉스 소켓 경로 한도, 테스트 임시 경로 충돌, `/bin/false` 이식성,
+  `jc-bench`→`jc-client`(GPUI) 의존으로 인한 링크 실패, `macos-14` 라벨 미지원 → `macos-latest`.
+
 ## macOS에서 발견한 것 (CI 첫 실행)
 
 - **유닉스 소켓 경로 길이**: macOS는 `sun_path[104]`라 경로가 104바이트를 넘으면 `bind`가 실패한다.

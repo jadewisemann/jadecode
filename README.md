@@ -8,6 +8,18 @@
 
 서버 · 네 에이전트 백엔드(Claude Code·OpenCode·omp·pi) · MCP 메시지 도구 · CLI · **GPUI 데스크톱 클라이언트**까지 들어 있다.
 
+## 설치 (릴리즈)
+
+```sh
+# 아카이브 받기: github.com/jadewisemann/jadecode/releases
+tar -xzf jadecode-*-<플랫폼>.tar.gz
+cd jadecode-*-<플랫폼>
+./install.sh            # ~/.local/bin 에 설치
+```
+
+지원: `linux-x86_64`, `macos-aarch64`. 체크섬(`.sha256`)이 함께 올라간다.
+릴리즈는 태그(`v*`)나 Actions의 `Release` 수동 실행으로 만든다(Draft로 열린다).
+
 ## 빠르게
 
 ```sh
