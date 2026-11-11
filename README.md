@@ -37,6 +37,7 @@ $J check                             # 일지·색인 전수 대조
 ```sh
 ./tools/e2e.sh haiku        # 카드 생성 → 워커 작업 → report(done) → 단계 이동
 ./tools/wake.sh haiku       # 워커 이벤트 → 오케스트레이터 다이제스트 → ack
+./tools/full.sh haiku       # 사람 발주 → 오케스트레이터 → 카드·워커 → 보고 → 깨우기(전체)
 ./tools/crash-test.sh 12 100  # kill -9 반복 복구
 JADECODE_LIVE=1 cargo test -p jc-driver --test live -- --test-threads=1   # 드라이버 계약
 ```
@@ -49,7 +50,7 @@ crates/jc-driver    A2 드라이버: claude -p stream-json 상주, 격리, 재�
 crates/jc-mcp       인스턴스용 MCP 서버(report/ask/propose/error, ack/send/reply, permission RPC)
 crates/jc-server    JSON-RPC over WebSocket, 쓰기 스레드, 구독, 감시, 인스턴스·권한·깨우기
 crates/jadecode-cli `jadecode` 바이너리
-tools/              e2e.sh · wake.sh · crash-test.sh
+tools/              e2e.sh · wake.sh · full.sh · crash-test.sh
 ```
 
 워크스페이스 모양(파일이 정본이다):

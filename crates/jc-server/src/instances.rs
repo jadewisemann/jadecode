@@ -964,8 +964,9 @@ pub fn build_brief(spec: &InstanceSpec) -> String {
             s.push_str("## project.toml\n\n");
             s.push_str(&doc);
             s.push_str("\n\n## 역할\n\n");
-            s.push_str("- 사람의 의도를 받아 카드를 만들고 단계 경로를 정한다(`card.add`는 서버 RPC: `jadecode rpc card.add '{...}'`).\n");
-            s.push_str("- 워커를 띄우려면 `jadecode rpc instance.start '{\"role\":\"worker\",\"project\":\"{project}\",\"card\":\"<카드>\",\"bot\":\"worker\"}'`. 여기서는 `instance.start` 대신 서버 도구를 쓴다.\n");
+            s.push_str("- 사람의 의도를 받아 카드를 만들고 단계 경로를 정한다. `card_add` 도구를 쓴다(project·title, path 선택).\n");
+            s.push_str("- 워커를 띄우려면 `instance_start` 도구를 쓴다(card, bot=worker).\n");
+            s.push_str("- 카드를 다음 단계로 옮기려면 `card_advance`를 쓴다.\n");
             s.push_str("- 워커 메시지가 오면 다이제스트 사용자 턴으로 전달된다. 처리한 마지막 seq를 `ack`로 남긴다.\n");
             s.push_str("- 사람 결정이 필요하면 `escalate`로 올린다. 네가 승인하지 않는다.\n");
             s.push_str("- 지금은 사람의 첫 지시를 기다린다. 필요하면 `read_event`로 최근 이벤트를 본다.\n");

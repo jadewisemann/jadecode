@@ -162,6 +162,44 @@ impl Tools {
                 }),
             ));
             out.push(tool(
+                "card_add",
+                "카드를 만든다. project·title 필수. path를 주면 그 단계 경로로 시작한다(기본 refine→implement→verify→pr→report).",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "project": {"type": "string"},
+                        "title": {"type": "string"},
+                        "path": {"type": "array", "items": {"type": "string"}},
+                        "repos": {"type": "array", "items": {"type": "object"}},
+                        "depends_on": {"type": "array", "items": {"type": "string"}},
+                        "body": {"type": "string", "description": "task.md 본문(markdown)"}
+                    },
+                    "required": ["project", "title"]
+                }),
+            ));
+            out.push(tool(
+                "card_advance",
+                "카드를 경로의 다음 단계로 옮긴다. 단계 종료 조건 검사는 아직 서버가 하지 않는다.",
+                json!({
+                    "type": "object",
+                    "properties": {"card": {"type": "string"}},
+                    "required": ["card"]
+                }),
+            ));
+            out.push(tool(
+                "instance_start",
+                "워커 인스턴스를 카드에 띄운다.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "card": {"type": "string"},
+                        "bot": {"type": "string", "description": "기본 worker"},
+                        "model": {"type": "string"}
+                    },
+                    "required": ["card"]
+                }),
+            ));
+            out.push(tool(
                 "read_event",
                 "이벤트 이력을 읽는다.",
                 json!({
@@ -321,6 +359,42 @@ impl Tools {
                 });
                 self.rpc("events.append", json!({"topic": self.topic(), "kind": "msg.escalation", "body": body}))
             }
+            "card_add" => {
+                let project = self
+                    .handle
+                    .project
+                    .clone();
+                let project = args
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&project)
+                    .to_string();
+                let mut p = json!({
+                    "project": project,
+                    "title": args["title"],
+                });
+                for k in ["path", "repos", "depends_on", "body"] {
+                    if let Some(v) = args.get(k) {
+                        p[k] = v.clone();
+                    }
+                }
+                self.rpc("card.add", p)
+            }
+            "card_advance" => self.rpc("card.advance", json!({"card": args["card"]})),
+            "instance_start" => {
+                let card = args["card"].as_str().unwrap_or("");
+                let project = self.handle.project.clone();
+                let mut p = json!({
+                    "role": "worker",
+                    "project": project,
+                    "card": card,
+                    "bot": args.get("bot").and_then(|v| v.as_str()).unwrap_or("worker"),
+                });
+                if let Some(m) = args.get("model") {
+                    p["model"] = m.clone();
+                }
+                self.rpc("instance.start", p)
+            }
             "read_event" => self.rpc(
                 "events.tail",
                 json!({
@@ -395,7 +469,10 @@ mod tests {
             .iter()
             .map(|x| x["name"].as_str().unwrap().to_string())
             .collect();
-        for n in ["ack", "send", "reply", "escalate", "read_event", "permission"] {
+        for n in [
+            "ack", "send", "reply", "escalate", "read_event", "card_add", "card_advance",
+            "instance_start", "permission",
+        ] {
             assert!(names.contains(&n.to_string()), "{names:?}");
         }
         assert!(!names.contains(&"report".to_string()));

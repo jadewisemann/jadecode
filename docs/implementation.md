@@ -24,6 +24,7 @@
 | `tools/crash-test.sh 12 100` | `kill -9` 12회 × 100건 = 303줄, `check` 어긋남 0 |
 | `tools/e2e.sh haiku` | 워커가 `greet.sh` 생성+실행권한, `report(done)`, 카드 상태 `waiting_human`, 단계 `implement→verify`, `check` ok |
 | `tools/wake.sh haiku` | 깨우기 다이제스트 1건, 오케스트레이터 `ack(upto=이벤트 seq)`, `ok: true` |
+| `tools/full.sh haiku` | 사람 발주 → 오케스트레이터가 카드 생성·워커 발주 → 워커가 `hello.txt` 작성·`report(done)` → 오케스트레이터 깨우기·`ack(27)` → `check` ok. 이벤트 38건 |
 | live 계약(드라이버) | 두 턴 같은 프로세스, 세션 id 고정, `--resume` 이력 유지, 턴별 사용량, 사용자 MCP 격리 통과 |
 
 ## 아키텍처 문서 → 코드 대응
@@ -58,7 +59,7 @@
 
 - **단계 종료 조건·경로 검사·사람 절차 강제** — 지금 `card.advance`는 경로만 따라간다. 종료 조건(명령 검사·봇 판정·사람 승인)과 `policy`의 사람 절차 검사는 다음 단계.
 - **워크트리 생성** — `card add --repo r=branch`는 앞머리에 적고 `--add-dir`로 이미 있는 폴더를 연다. `git worktree add`는 아직 안 부른다(레포 경로 설정 필요).
-- **오케스트레이터의 카드 조작 도구** — 오케스트레이터 MCP에는 `ack`/`send`/`reply`/`escalate`/`read_event`만 있다. 카드 생성·이동은 CLI/RPC로 하도록 브리프에 적었다. MCP 도구로 올리는 것이 다음.
+- **종료 조건 기반 단계 이동** — `card_advance`는 지금 경로만 따라간다. 명령 검사·리뷰 봇 판정·사람 승인을 붙이는 것이 다음.
 - **봇 버전 관리(git 커밋)·자기개선(RSI)** — 사용자가 범위에서 뺐다. 봇은 폴더 + 기억(`memory/`)까지만.
 - **Mac 클라이언트(GPUI)** — berth 데스크톱 코드를 출발점으로. 별도 work.
 - **원격(Tailscale)** — 첫 버전 범위 밖.
