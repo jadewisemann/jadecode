@@ -258,12 +258,54 @@ mod tests {
     }
 
     pub fn tempdir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "jc-test-{}-{}",
-            std::process::id(),
-            crate::ulid::new_id()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+        crate::workspace::short_temp_root("jct")
+    }
+}
+
+/// 짧은 임시 워크스페이스 경로를 만든다.
+///
+/// macOS 유닉스 도메인 소켓은 경로가 104바이트를 넘으면 `bind`가 실패한다
+/// (`sun_path[104]`, NUL 포함). `std::env::temp_dir()`은 macOS에서
+/// `/var/folders/XX/…/T`(약 50자)라 그 아래에 긴 이름을 붙이면 넘친다.
+/// 그래서 `/tmp/jc<번호>`처럼 짧게 쓰고, 없으면 임시 폴더로 물러난다.
+pub fn short_temp_root(prefix: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let short = format!("/tmp/{prefix}{}-{}", std::process::id(), n);
+    if std::fs::create_dir_all(&short).is_ok() {
+        return PathBuf::from(short);
+    }
+    let fallback = std::env::temp_dir().join(format!("{prefix}{}-{}", std::process::id(), n));
+    let _ = std::fs::create_dir_all(&fallback);
+    fallback
+}
+
+/// 유닉스 소켓 경로가 플랫폼 한도 안에 드는지(진단용).
+pub fn socket_path_len_ok(p: &std::path::Path) -> bool {
+    // macOS 104, 리눅스 108. 양쪽 다 안전한 100을 기준으로 본다.
+    p.as_os_str().len() <= 100
+}
+
+#[cfg(test)]
+mod sock_tests {
+    use super::*;
+
+    #[test]
+    fn short_temp_root_is_short() {
+        let p = short_temp_root("jcx");
+        let s = p.to_string_lossy().to_string();
+        assert!(s.len() < 40, "{s}");
+        assert!(p.is_dir());
+        // 두 번 불러도 서로 다르다.
+        let q = short_temp_root("jcx");
+        assert_ne!(p, q);
+    }
+
+    #[test]
+    fn socket_len_check() {
+        assert!(socket_path_len_ok(std::path::Path::new("/tmp/a.sock")));
+        let long = format!("/var/folders/xx/{}/s.sock", "a".repeat(120));
+        assert!(!socket_path_len_ok(std::path::Path::new(&long)));
     }
 }

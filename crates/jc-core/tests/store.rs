@@ -6,13 +6,7 @@ use jc_core::taskmd::card_state;
 use jc_core::{NewCard, Workspace};
 
 fn tmp() -> std::path::PathBuf {
-    let p = std::env::temp_dir().join(format!(
-        "jc-store-{}-{}",
-        std::process::id(),
-        jc_core::ulid::new_id()
-    ));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+    jc_core::short_temp_root("jcs")
 }
 
 fn workspace() -> (Workspace, std::path::PathBuf) {

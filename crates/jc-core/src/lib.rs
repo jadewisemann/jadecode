@@ -21,4 +21,4 @@ pub use event::NewEvent;
 pub use store::{Fsync, RecoveryStats, Store};
 pub use taskmd::CardState;
 pub use topic::{journal_for_topic, topic_matches};
-pub use workspace::Workspace;
+pub use workspace::{short_temp_root, socket_path_len_ok, Workspace};

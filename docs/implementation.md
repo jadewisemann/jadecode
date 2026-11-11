@@ -105,6 +105,17 @@
 - FSEvents 지연·합침, APFS `fsync` vs `F_FULLFSYNC`.
 - 카드 1,000개·이벤트 10만 건 재구성 시간(S5 Linux: 0.46~2.0초).
 
+## macOS에서 발견한 것 (CI 첫 실행)
+
+- **유닉스 소켓 경로 길이**: macOS는 `sun_path[104]`라 경로가 104바이트를 넘으면 `bind`가 실패한다.
+  GitHub Actions의 임시 폴더(`/var/folders/XX/…/T`)는 약 50자라 테스트 경로가 116자가 되어
+  통합 테스트 8개가 전부 실패했다(리눅스에서는 108자라 통과).
+  → `jc_core::short_temp_root()`(`/tmp/jc<번호>`)로 테스트 경로를 짧게 하고,
+  서버는 경로가 한도를 넘으면 **원인이 담긴 오류**로 끝나게 했으며(`"유닉스 소켓 경로가 너무 길다(N자 > 103자)"`),
+  CLI는 기본 소켓이 너무 길면 `/tmp/jc-<워크스페이스>.sock`으로 자동 물러난다.
+  클라이언트는 `.jadecode/server.json`의 `socket` 값을 먼저 본다(서버가 실제로 연 곳).
+- 실측: 121자 경로에서 `jadecode server`가 `/tmp/jc-ws.sock`으로 뜨고 RPC가 동작한다.
+
 ## 이 컨테이너에서 발견한 것
 
 - `claude --session-id`는 진짜 UUID를 요구한다(ULID 문자열은 `Invalid session ID`). `jc_core::ulid::uuid4()`를 쓴다.

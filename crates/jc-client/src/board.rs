@@ -148,6 +148,16 @@ impl Connection {
             Some(w) => w.to_path_buf(),
             None => find_workspace(&std::env::current_dir()?)?,
         };
+        // 서버가 남긴 실제 소켓 경로를 먼저 본다(--socket 으로 바꿨을 수 있다).
+        if let Ok(t) = std::fs::read_to_string(ws.join(".jadecode/server.json")) {
+            if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                if let Some(p) = v["socket"].as_str().filter(|s| !s.is_empty()) {
+                    return Ok(Self {
+                        socket: PathBuf::from(p),
+                    });
+                }
+            }
+        }
         Ok(Self {
             socket: ws.join(".jadecode/jadecode.sock"),
         })

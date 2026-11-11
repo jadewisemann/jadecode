@@ -1,7 +1,7 @@
 //! 서버 본체: 쓰기 스레드, WebSocket JSON-RPC 연결, 일지 구독, `task.md` 감시.
 
 use crate::rpc::{self, error_codes, Error, Method, Request};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use jc_core::index::{self, CardRow};
 use jc_core::store::{Fsync, Store};
@@ -336,7 +336,8 @@ where
     let _ = std::fs::create_dir_all(root.join(".jadecode"));
     let _ = std::fs::write(
         root.join(".jadecode/server.json"),
-        json!({"pid": std::process::id(), "endpoint": bound.endpoint(), "started": jc_core::event::now_ms()})
+        json!({"pid": std::process::id(), "endpoint": bound.endpoint(), "started": jc_core::event::now_ms(),
+               "socket": match &bound { Bound::Unix{path,..} => path.display().to_string(), _ => String::new() }})
             .to_string(),
     );
 
@@ -440,6 +441,18 @@ impl Bind {
                 Bound::Tcp { listener: l, addr }
             }
             Bind::Unix(path) => {
+                // macOS의 유닉스 소켓 경로 한도(sun_path 104바이트)를 넘으면 bind가
+                // 알 수 없는 오류로 실패한다. 원인을 바로 알 수 있게 먼저 검사한다.
+                let len = path.as_os_str().len();
+                let limit = if cfg!(target_os = "macos") { 103 } else { 107 };
+                if len > limit {
+                    bail!(
+                        "유닉스 소켓 경로가 너무 길다({len}자 > {limit}자): {}. \
+                         더 짧은 경로를 --socket 으로 주거나 워크스페이스를 짧은 곳에 두라 \
+                         (예: /tmp/jc / ~/jc)",
+                        path.display()
+                    );
+                }
                 if let Some(d) = path.parent() {
                     std::fs::create_dir_all(d)?;
                 }

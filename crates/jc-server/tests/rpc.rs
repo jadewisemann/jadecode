@@ -18,12 +18,8 @@ struct Harness {
 }
 
 async fn setup(path: &[&str]) -> (Harness, Vec<jc_core::workspace::CardEntry>) {
-    let dir = std::env::temp_dir().join(format!(
-        "jc-srv-{}-{}",
-        std::process::id(),
-        jc_core::ulid::new_id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    // macOS 유닉스 소켓 경로 한도(104) 때문에 짧은 경로를 쓴다.
+    let dir = jc_core::short_temp_root("jcr");
     let (mut ws, _) = Workspace::init(&dir, "test").unwrap();
     ws.add_project("p1", None).unwrap();
     let mut cards = vec![];
@@ -37,7 +33,7 @@ async fn setup(path: &[&str]) -> (Harness, Vec<jc_core::workspace::CardEntry>) {
         .unwrap();
     }
     cards.extend(ws.cards().unwrap());
-    let socket = dir.join(".jadecode/test.sock");
+    let socket = dir.join(".jadecode/s.sock");
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let ready = tokio::sync::oneshot::channel::<()>();
     let ready_tx = ready.0;
@@ -146,7 +142,11 @@ async fn info_lists_methods() {
     let names = r["result"]["methods"].as_array().unwrap();
     assert!(names.iter().any(|n| n == "events.subscribe"));
     assert_eq!(r["result"]["name"], "jadecode");
-    assert!(r["result"]["workspace"].as_str().unwrap().contains("jc-srv-"));
+    // 짧은 임시 경로를 쓰므로 이름 규칙 대신 "그 워크스페이스"인지만 본다.
+    assert_eq!(
+        r["result"]["workspace"].as_str().unwrap(),
+        h.ws.root.display().to_string()
+    );
     h.client.abort();
 }
 
@@ -359,4 +359,24 @@ async fn unknown_method_and_bad_params() {
     .await;
     assert_eq!(r["error"]["code"], -32602);
     h.client.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn long_socket_path_fails_with_clear_message() {
+    // macOS 유닉스 소켓 한도(104)를 넘는 경로는 "알 수 없는 오류"가 아니라
+    // 원인이 담긴 오류로 끝나야 한다(사용자가 --socket 을 고칠 수 있게).
+    // 워크스페이스만 새로 만들고 서버는 띄우지 않는다(잠금 충돌 방지).
+    let dir = jc_core::short_temp_root("jcl");
+    let (ws, _) = jc_core::Workspace::init(&dir, "t").unwrap();
+    let workspace = ws.root.clone();
+    let long = workspace.join("a".repeat(120)).join("x.sock");
+    let cfg = ServerConfig {
+        watch: false,
+        mcp_socket: long.clone(),
+        ..Default::default()
+    };
+    let res = jc_server::serve(workspace, Bind::Unix(long.clone()), cfg, |_| {}).await;
+    let err = res.expect_err("긴 경로는 실패해야 한다");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("너무 길다"), "{msg}");
 }

@@ -258,7 +258,7 @@ fn main() -> Result<()> {
             } else {
                 let sock = flag_value(&args, "--socket")
                     .map(PathBuf::from)
-                    .unwrap_or_else(|| ws.root.join(".jadecode/jadecode.sock"));
+                    .unwrap_or_else(|| default_socket(&ws.root));
                 rt().block_on(jc_server::serve(
                     ws.root.clone(),
                     jc_server::server::Bind::Unix(sock),
@@ -652,10 +652,29 @@ fn server_up(ws: &Workspace, args: &[String]) -> Option<PathBuf> {
     }
 }
 
+/// 기본 소켓 경로. 경로가 유닉스 소켓 한도를 넘으면 짧은 곳에 둔다
+/// (macOS `sun_path` 104바이트). 긴 경로에서도 서버가 뜨게 하려는 것이다.
+fn default_socket(root: &std::path::Path) -> PathBuf {
+    let inside = root.join(".jadecode/jadecode.sock");
+    if inside.as_os_str().len() <= 100 {
+        return inside;
+    }
+    // 워크스페이스 이름으로 짧은 소켓을 만든다(/tmp 안).
+    let tag: String = root
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "ws".into())
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let tag: String = tag.chars().take(12).collect();
+    PathBuf::from(format!("/tmp/jc-{tag}.sock"))
+}
+
 fn socket_path(ws: &Workspace, args: &[String]) -> PathBuf {
     flag_value(args, "--socket")
         .map(PathBuf::from)
-        .unwrap_or_else(|| ws.root.join(".jadecode/jadecode.sock"))
+        .unwrap_or_else(|| default_socket(&ws.root))
 }
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {

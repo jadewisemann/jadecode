@@ -15,12 +15,8 @@ async fn setup() -> (
     tokio::task::JoinHandle<()>,
     String,
 ) {
-    let dir = std::env::temp_dir().join(format!(
-        "jc-inst-{}-{}",
-        std::process::id(),
-        jc_core::ulid::new_id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    // macOS 유닉스 소켓 경로 한도(104) 때문에 짧은 경로를 쓴다.
+    let dir = jc_core::short_temp_root("jci");
     let (mut ws, _) = Workspace::init(&dir, "test").unwrap();
     ws.add_project("p1", Some("api")).unwrap();
     let card = ws
@@ -32,7 +28,7 @@ async fn setup() -> (
         })
         .unwrap();
     let card_dir = card.file_name().unwrap().to_string_lossy().to_string();
-    let socket = dir.join(".jadecode/test.sock");
+    let socket = dir.join(".jadecode/s.sock");
     let root = dir.clone();
     let sock = socket.clone();
     let cfg = ServerConfig {
