@@ -46,9 +46,17 @@ for b in $BINS; do cp "target/release/$b" "dist/$DIR/"; done
 cp README.md SPEC.md "dist/$DIR/"
 cp -r docs "dist/$DIR/"
 
+# macOS 에서 돌면 앱 번들도 넣는다(리눅스에서는 건너뛴다). release.yml 과 같은 경로.
+if [ "$(uname -s)" = "Darwin" ]; then
+  VERSION="${TAG#v}" ./tools/make-app.sh "target/release/jadecode-client" "dist/$DIR"
+else
+  echo "macOS 가 아니다: .app 번들은 만들지 않는다(리눅스 빌드에서는 건너뜀)"
+fi
+
 cat > "dist/$DIR/install.sh" <<'EOS'
 #!/bin/sh
 # jadecode 설치: 바이너리를 $JADECODE_PREFIX(기본 ~/.local/bin)에 둔다.
+# macOS 아카이브에 jadecode.app 이 있으면 /Applications 에도 복사한다.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 DEST="${JADECODE_PREFIX:-$HOME/.local/bin}"
@@ -58,9 +66,18 @@ for b in jadecode jadecode-mcp jadecode-client jc-bench; do
   chmod +x "$DEST/$b"
   echo "installed $DEST/$b"
 done
+if [ -d "$HERE/jadecode.app" ]; then
+  if [ -w /Applications ]; then
+    cp -R "$HERE/jadecode.app" /Applications/
+    echo "installed /Applications/jadecode.app"
+  else
+    echo "건너뜀: /Applications 에 쓸 수 없다. $HERE/jadecode.app 을 직접 옮겨라."
+  fi
+fi
 echo
 echo "다음: jadecode init ~/jc/work && cd ~/jc/work && jadecode server"
 EOS
+
 chmod +x "dist/$DIR/install.sh"
 
 # 실행에 필요한 공유 라이브러리(리눅스만).
