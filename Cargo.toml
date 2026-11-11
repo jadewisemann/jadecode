@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/jc-core", "crates/jc-driver", "crates/jc-mcp", "crates/jc-server", "crates/jc-client", "crates/jc-bench", "crates/jadecode-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.9"
+sha2 = "0.10"
+rand = "0.9"
+libc = "0.2"
+rusqlite = { version = "0.41", features = ["bundled"] }
+notify = "8"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+jc-core = { path = "crates/jc-core" }
+jc-server = { path = "crates/jc-server" }
+jc-driver = { path = "crates/jc-driver" }
+jc-mcp = { path = "crates/jc-mcp" }
+jc-client = { path = "crates/jc-client" }
+
+[profile.release]
+debug = 1
+
+# GPUI가 끌어오는 zed-async-tar 0.5.0-zed 는 xattr 0.2 를 고정하는데,
+# 그 판이 최신 libc(aarch64 linux)에서 `libc::ENOATTR`를 못 찾아 빌드가 깨진다.
+# vendor/xattr 는 같은 API에 그 상수만 고친 사본이다.
+[patch.crates-io]
+xattr = { path = "vendor/xattr" }
