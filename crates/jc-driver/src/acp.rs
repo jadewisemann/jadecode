@@ -27,7 +27,8 @@ pub struct AcpPermission {
     pub options: Vec<Value>,
 }
 
-pub type PermissionFn = Arc<dyn Fn(AcpPermission) -> oneshot::Receiver<(bool, String)> + Send + Sync>;
+pub type PermissionFn =
+    Arc<dyn Fn(AcpPermission) -> oneshot::Receiver<(bool, String)> + Send + Sync>;
 pub type FileEventFn = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// ACP 클라이언트 쪽 콜백 묶음.
@@ -97,8 +98,7 @@ impl AcpDriver {
 
         let (ev_tx, ev_rx) = mpsc::channel::<DriverEvent>(1024);
         let (req_tx, mut req_rx) = mpsc::channel::<String>(128);
-        let (resp_tx, mut resp_rx) =
-            mpsc::channel::<(u64, Value)>(64);
+        let (resp_tx, mut resp_rx) = mpsc::channel::<(u64, Value)>(64);
 
         // 쓰기 태스크
         let writer = tokio::spawn(async move {
@@ -152,8 +152,7 @@ impl AcpDriver {
                         let p = params["path"].as_str().unwrap_or("").to_string();
                         let content =
                             read_allowed(&host_r.root, &host_r.add_dirs, &p).unwrap_or_default();
-                        let resp =
-                            json!({"jsonrpc":"2.0","id":rid,"result":{"content":content}});
+                        let resp = json!({"jsonrpc":"2.0","id":rid,"result":{"content":content}});
                         let _ = req_tx2.send(resp.to_string()).await;
                     }
                     "fs/write_text_file" => {
@@ -233,8 +232,9 @@ impl AcpDriver {
             })
         });
 
-        let pending: Arc<tokio::sync::Mutex<std::collections::HashMap<u64, oneshot::Sender<Value>>>> =
-            Arc::new(tokio::sync::Mutex::new(Default::default()));
+        let pending: Arc<
+            tokio::sync::Mutex<std::collections::HashMap<u64, oneshot::Sender<Value>>>,
+        > = Arc::new(tokio::sync::Mutex::new(Default::default()));
         let result_tx = ev_tx.clone();
         let mut d = Self {
             child,
@@ -412,7 +412,10 @@ pub fn prompt_response_to_result(v: &Value) -> DriverEvent {
         is_error: v.get("stopReason").and_then(|x| x.as_str()) == Some("cancelled"),
         text: None,
         usage: Usage {
-            input_tokens: usage.get("inputTokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            input_tokens: usage
+                .get("inputTokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0),
             output_tokens: usage
                 .get("outputTokens")
                 .and_then(|x| x.as_u64())
@@ -434,7 +437,10 @@ pub fn prompt_response_to_result(v: &Value) -> DriverEvent {
 /// `session/update` → 이벤트.
 pub fn map_update(params: &Value) -> Vec<DriverEvent> {
     let u = &params["update"];
-    let kind = u.get("sessionUpdate").and_then(|x| x.as_str()).unwrap_or("");
+    let kind = u
+        .get("sessionUpdate")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
     let mut out = vec![];
     match kind {
         "agent_message_chunk" => {
@@ -547,8 +553,10 @@ mod tests {
 
     #[test]
     fn maps_updates() {
-        let evs = map_update(&serde_json::json!({"update":{"sessionUpdate":"agent_message_chunk",
-            "content":{"type":"text","text":"hi"}}}));
+        let evs = map_update(
+            &serde_json::json!({"update":{"sessionUpdate":"agent_message_chunk",
+            "content":{"type":"text","text":"hi"}}}),
+        );
         match &evs[0] {
             DriverEvent::Assistant { blocks, .. } => {
                 assert!(matches!(&blocks[0], AssistantBlock::Text { text } if text == "hi"))
@@ -568,7 +576,9 @@ mod tests {
         let ev = prompt_response_to_result(&serde_json::json!({"stopReason":"end_turn",
             "usage":{"inputTokens":10,"outputTokens":2,"cachedReadTokens":5}}));
         match ev {
-            DriverEvent::Result { usage, is_error, .. } => {
+            DriverEvent::Result {
+                usage, is_error, ..
+            } => {
                 assert_eq!(usage.input_tokens, 10);
                 assert_eq!(usage.cache_read_input_tokens, 5);
                 assert!(!is_error);

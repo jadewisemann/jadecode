@@ -43,7 +43,8 @@ fn encode(ms: u64, hi: u16, lo: u64) -> String {
 /// ULID 모양인지(26자 Crockford, 첫 글자는 0~7).
 pub fn is_ulid(s: &str) -> bool {
     s.len() == 26
-        && s.bytes().all(|b| ALPHABET.contains(&b.to_ascii_uppercase()))
+        && s.bytes()
+            .all(|b| ALPHABET.contains(&b.to_ascii_uppercase()))
         && s.as_bytes()[0].to_ascii_uppercase() <= b'7'
 }
 
@@ -98,9 +99,15 @@ mod tests {
         let u = uuid4();
         assert_eq!(u.len(), 36);
         let parts: Vec<&str> = u.split('-').collect();
-        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12]
+        );
         assert!(parts[2].starts_with('4'), "{u}");
-        assert!(["8", "9", "a", "b"].iter().any(|c| parts[3].starts_with(c)), "{u}");
+        assert!(
+            ["8", "9", "a", "b"].iter().any(|c| parts[3].starts_with(c)),
+            "{u}"
+        );
         assert_ne!(uuid4(), uuid4());
     }
 

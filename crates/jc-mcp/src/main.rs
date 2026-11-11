@@ -51,7 +51,10 @@ fn main() -> Result<()> {
         let msg: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                send(&out, json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":e.to_string()}}));
+                send(
+                    &out,
+                    json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":e.to_string()}}),
+                );
                 continue;
             }
         };
@@ -75,7 +78,10 @@ fn main() -> Result<()> {
             }
             "notifications/initialized" | "initialized" => {}
             "tools/list" => {
-                send(&out, json!({"jsonrpc":"2.0","id":id,"result":{"tools": tools.list()}}));
+                send(
+                    &out,
+                    json!({"jsonrpc":"2.0","id":id,"result":{"tools": tools.list()}}),
+                );
             }
             "tools/call" => {
                 let name = params

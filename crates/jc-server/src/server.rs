@@ -126,11 +126,7 @@ fn default_mcp_bin() -> PathBuf {
 }
 
 /// 쓰기 스레드: `Store`를 혼자 소유한다. 여러 명령을 묶어 한 번에 커밋한다(묶음 쓰기).
-fn writer_thread(
-    mut st: Store,
-    mut rx: mpsc::Receiver<Cmd>,
-    head: watch::Sender<u64>,
-) {
+fn writer_thread(mut st: Store, mut rx: mpsc::Receiver<Cmd>, head: watch::Sender<u64>) {
     let mut batches = 0u64;
     let mut appended = 0u64;
     let mut watch_checks = 0u64;
@@ -178,32 +174,82 @@ fn writer_thread(
                     pend.extend(events);
                     pend_reply.push(reply);
                 }
-                Cmd::SetFront { card, front, kind, body, reply } => {
-                    flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
+                Cmd::SetFront {
+                    card,
+                    front,
+                    kind,
+                    body,
+                    reply,
+                } => {
+                    flush(
+                        &mut st,
+                        &mut pend,
+                        &mut pend_reply,
+                        &mut batches,
+                        &mut appended,
+                    );
                     let r = st
                         .set_front(&card, &front, &kind, body)
                         .map_err(|e| e.to_string());
                     let _ = reply.send(r);
                 }
                 Cmd::RegisterCard { card, reply } => {
-                    flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
+                    flush(
+                        &mut st,
+                        &mut pend,
+                        &mut pend_reply,
+                        &mut batches,
+                        &mut appended,
+                    );
                     let _ = reply.send(st.register_card(&card).map_err(|e| e.to_string()));
                 }
-                Cmd::SetFrontRaw { card, status, stage, kind, body, reply } => {
-                    flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
-                    let r = set_front_raw(&mut st, &card, status.as_deref(), stage.as_deref(), &kind, body)
-                        .map_err(|e| e.to_string());
+                Cmd::SetFrontRaw {
+                    card,
+                    status,
+                    stage,
+                    kind,
+                    body,
+                    reply,
+                } => {
+                    flush(
+                        &mut st,
+                        &mut pend,
+                        &mut pend_reply,
+                        &mut batches,
+                        &mut appended,
+                    );
+                    let r = set_front_raw(
+                        &mut st,
+                        &card,
+                        status.as_deref(),
+                        stage.as_deref(),
+                        &kind,
+                        body,
+                    )
+                    .map_err(|e| e.to_string());
                     let _ = reply.send(r);
                 }
                 Cmd::CheckCard { card } => {
-                    flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
+                    flush(
+                        &mut st,
+                        &mut pend,
+                        &mut pend_reply,
+                        &mut batches,
+                        &mut appended,
+                    );
                     watch_checks += 1;
                     if let Err(e) = st.check_card(&card, "watch") {
                         eprintln!("check_card {card}: {e}");
                     }
                 }
                 Cmd::Stats { reply } => {
-                    flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
+                    flush(
+                        &mut st,
+                        &mut pend,
+                        &mut pend_reply,
+                        &mut batches,
+                        &mut appended,
+                    );
                     let _ = reply.send(json!({
                         "batches": batches,
                         "appended": appended,
@@ -215,7 +261,13 @@ fn writer_thread(
                 }
             }
         }
-        flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
+        flush(
+            &mut st,
+            &mut pend,
+            &mut pend_reply,
+            &mut batches,
+            &mut appended,
+        );
         let _ = head.send(st.last_seq());
     }
 }
@@ -259,11 +311,18 @@ fn start_watcher(root: PathBuf, cmd: mpsc::Sender<Cmd>, debounce: Duration) -> R
                         }
                     }
                     for p in ev.paths {
-                        let Ok(rel) = p.strip_prefix(&root) else { continue };
-                        let parts: Vec<String> =
-                            rel.iter().map(|s| s.to_string_lossy().to_string()).collect();
+                        let Ok(rel) = p.strip_prefix(&root) else {
+                            continue;
+                        };
+                        let parts: Vec<String> = rel
+                            .iter()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .collect();
                         // work/<p>/<c> 새 카드 폴더
-                        if parts.len() == 3 && parts[0] == "work" && ev.kind.is_create() && p.is_dir()
+                        if parts.len() == 3
+                            && parts[0] == "work"
+                            && ev.kind.is_create()
+                            && p.is_dir()
                         {
                             let _ = w.watch(&p, RecursiveMode::NonRecursive);
                             due.insert(parts.join("/"), Instant::now() + debounce);
@@ -294,12 +353,7 @@ fn start_watcher(root: PathBuf, cmd: mpsc::Sender<Cmd>, debounce: Duration) -> R
 }
 
 /// 서버를 띄운다. `listener`가 준비되면 `on_ready`를 부른다(테스트·CLI가 포트를 알 수 있게).
-pub async fn serve<F>(
-    root: PathBuf,
-    bind: Bind,
-    config: ServerConfig,
-    on_ready: F,
-) -> Result<()>
+pub async fn serve<F>(root: PathBuf, bind: Bind, config: ServerConfig, on_ready: F) -> Result<()>
 where
     F: FnOnce(&Bound),
 {
@@ -484,11 +538,7 @@ impl Bound {
 }
 
 /// 편의 함수: 유닉스 소켓 하나로 서버를 띄운다(첫 버전 기본).
-pub async fn serve_unix(
-    root: PathBuf,
-    socket: PathBuf,
-    config: ServerConfig,
-) -> Result<()> {
+pub async fn serve_unix(root: PathBuf, socket: PathBuf, config: ServerConfig) -> Result<()> {
     serve(root, Bind::Unix(socket), config, |_| {}).await
 }
 
@@ -522,7 +572,10 @@ where
             Ok(r) => r,
             Err(e) => {
                 let _ = out_tx
-                    .send(rpc::err(&Value::Null, Error::new(error_codes::PARSE, e.to_string())))
+                    .send(rpc::err(
+                        &Value::Null,
+                        Error::new(error_codes::PARSE, e.to_string()),
+                    ))
                     .await;
                 continue;
             }
@@ -531,7 +584,10 @@ where
             let _ = out_tx
                 .send(rpc::err(
                     &req.id,
-                    Error::new(error_codes::METHOD_NOT_FOUND, format!("no method {}", req.method)),
+                    Error::new(
+                        error_codes::METHOD_NOT_FOUND,
+                        format!("no method {}", req.method),
+                    ),
                 ))
                 .await;
             continue;
@@ -545,7 +601,11 @@ where
             Method::EventsSubscribe => {
                 let topics: Vec<String> = params["topics"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let from_seq = params["from_seq"].as_u64().unwrap_or(0);
                 let sid = next_sub;
@@ -585,7 +645,9 @@ where
                 });
             }
             Method::EventsHead => {
-                let _ = out.send(rpc::ok(&id, json!({"seq": *sh.head.borrow()}))).await;
+                let _ = out
+                    .send(rpc::ok(&id, json!({"seq": *sh.head.borrow()})))
+                    .await;
             }
             Method::EventsTail => {
                 let sh2 = sh.clone();
@@ -711,7 +773,9 @@ where
             }
             Method::BotsList => {
                 let sh2 = sh.clone();
-                let resp = bots_list(&sh2).map(|v| rpc::ok(&id, v)).unwrap_or_else(|e| rpc::err(&id, e));
+                let resp = bots_list(&sh2)
+                    .map(|v| rpc::ok(&id, v))
+                    .unwrap_or_else(|e| rpc::err(&id, e));
                 let _ = out.send(resp).await;
             }
             Method::AgentsList => {
@@ -838,7 +902,11 @@ async fn append(sh: Arc<Shared>, events: Vec<NewEvent>) -> Result<Vec<u64>, Erro
 async fn events_tail(sh: &Shared, params: &Value) -> Result<Value, Error> {
     let topics: Vec<String> = params["topics"]
         .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let limit = params["limit"].as_u64().unwrap_or(50).min(1000);
     let before = params["before_seq"].as_u64();
@@ -930,7 +998,11 @@ fn cards_list(sh: &Shared, params: &Value) -> Result<Value, Error> {
     let stage = params.get("stage").and_then(|v| v.as_str());
     let rows: Vec<Value> = card_rows(sh)?
         .into_iter()
-        .filter(|r| project.map(|p| r.path.starts_with(&format!("work/{p}/"))).unwrap_or(true))
+        .filter(|r| {
+            project
+                .map(|p| r.path.starts_with(&format!("work/{p}/")))
+                .unwrap_or(true)
+        })
         .filter(|r| stage.map(|s| r.stage == s).unwrap_or(true))
         .map(|r| {
             json!({"path":r.path,"id":r.id,"title":r.title,"project":r.project,
@@ -970,10 +1042,16 @@ async fn card_append(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
         .unwrap_or("card.note")
         .to_string();
     if !kind.starts_with("card.") && !kind.starts_with("msg.") && !kind.starts_with("instance.") {
-        return Err(Error::invalid_params("kind must start with card./msg./instance."));
+        return Err(Error::invalid_params(
+            "kind must start with card./msg./instance.",
+        ));
     }
     let body = params.get("body").cloned().unwrap_or(Value::Null);
-    let seqs = append(sh.clone(), vec![NewEvent::new(card_topic(&rel), kind.clone(), body)]).await?;
+    let seqs = append(
+        sh.clone(),
+        vec![NewEvent::new(card_topic(&rel), kind.clone(), body)],
+    )
+    .await?;
     Ok(json!({"path": rel, "kind": kind, "seqs": seqs}))
 }
 
@@ -1004,7 +1082,14 @@ async fn set_front_cmd(
 async fn card_set_status(sh: &Shared, params: &Value) -> Result<Value, Error> {
     let needle = require_str(params, "card")?;
     let status = require_str(params, "status")?;
-    const OK: &[&str] = &["idle", "working", "blocked", "waiting_human", "done", "failed"];
+    const OK: &[&str] = &[
+        "idle",
+        "working",
+        "blocked",
+        "waiting_human",
+        "done",
+        "failed",
+    ];
     if !OK.contains(&status.as_str()) {
         return Err(Error::invalid_params(format!(
             "status must be one of {OK:?}"
@@ -1072,7 +1157,10 @@ fn projects_list(sh: &Shared) -> Result<Value, Error> {
                 .and_then(|s| s.parse::<toml::Table>().ok())
                 .and_then(|t| t.get("name").and_then(|v| v.as_str().map(String::from)))
                 .unwrap_or_else(|| slug.clone());
-            let n = cards.iter().filter(|c| c.path.starts_with(&format!("{p}/"))).count();
+            let n = cards
+                .iter()
+                .filter(|c| c.path.starts_with(&format!("{p}/")))
+                .count();
             json!({"path":p,"slug":slug,"topic":project_topic(p),"name":name,"cards":n})
         })
         .collect();
@@ -1102,8 +1190,8 @@ async fn subscription(
             let c = conn.clone();
             let sql2 = sql.clone();
             let args2 = args.clone();
-            let rows: Vec<(u64, String)> = tokio::task::spawn_blocking(
-                move || -> Result<Vec<(u64, String)>> {
+            let rows: Vec<(u64, String)> =
+                tokio::task::spawn_blocking(move || -> Result<Vec<(u64, String)>> {
                     let c = c.lock().unwrap();
                     let mut st = c.prepare_cached(&sql2)?;
                     let mut p: Vec<Box<dyn rusqlite::ToSql>> =
@@ -1118,9 +1206,8 @@ async fn subscription(
                         })?
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(v)
-                },
-            )
-            .await??;
+                })
+                .await??;
             let n = rows.len();
             let mut last = cursor;
             for (seq, line) in rows {
@@ -1143,7 +1230,10 @@ async fn subscription(
 /// `instance.start {role, project, card?, bot, model?, id?}`
 async fn instance_start(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
     let role = crate::instances::Role::parse(
-        params.get("role").and_then(|v| v.as_str()).unwrap_or("worker"),
+        params
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("worker"),
     );
     let project = require_str(params, "project")?;
     let bot = params
@@ -1155,7 +1245,10 @@ async fn instance_start(sh: Arc<Shared>, params: &Value) -> Result<Value, Error>
         crate::instances::Role::Worker => Some(resolve_card(&sh, &require_str(params, "card")?)?),
         crate::instances::Role::Orchestrator => None,
     };
-    let model = params.get("model").and_then(|v| v.as_str()).map(String::from);
+    let model = params
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let agent_override = params.get("agent").and_then(|v| v.as_str());
     let id = params
         .get("id")
@@ -1171,8 +1264,8 @@ async fn instance_start(sh: Arc<Shared>, params: &Value) -> Result<Value, Error>
     let mut spec = crate::instances::build_spec(&sh.root, id, role, project, card, &bot, model)
         .map_err(|e| Error::invalid_params(e.to_string()))?;
     if let Some(a) = agent_override {
-        spec.agent = jc_driver::AgentKind::parse(a)
-            .map_err(|e| Error::invalid_params(e.to_string()))?;
+        spec.agent =
+            jc_driver::AgentKind::parse(a).map_err(|e| Error::invalid_params(e.to_string()))?;
     }
     let info = sh
         .instances
@@ -1212,7 +1305,10 @@ async fn permission_request(sh: Arc<Shared>, params: &Value) -> Result<Value, Er
     if tool == "AskUserQuestion" {
         return ask_user_question(sh, &inst, &input).await;
     }
-    let d = sh.instances.permission(&inst, &tool, input.clone(), &tuid).await;
+    let d = sh
+        .instances
+        .permission(&inst, &tool, input.clone(), &tuid)
+        .await;
     Ok(if d.allow {
         json!({"behavior": "allow", "updatedInput": input})
     } else {
@@ -1287,7 +1383,11 @@ fn bots_list(sh: &Shared) -> Result<Value, Error> {
             .collect();
         names.sort();
         for p in names {
-            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             match jc_driver::spec::BotSpec::load(&p) {
                 Ok(spec) => out.push(json!({
                     "name": spec.name, "dir": name, "title": spec.title,
@@ -1324,7 +1424,11 @@ async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
     let title = require_str(params, "title")?;
     let path: Vec<String> = params["path"]
         .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| {
             ["refine", "implement", "verify", "pr", "report"]
                 .iter()
@@ -1341,10 +1445,20 @@ async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
         .unwrap_or_default();
     let depends_on: Vec<String> = params["depends_on"]
         .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
-    let parent = params.get("parent").and_then(|v| v.as_str()).map(String::from);
-    let body = params.get("body").and_then(|v| v.as_str()).map(String::from);
+    let parent = params
+        .get("parent")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let body = params
+        .get("body")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let nc = jc_core::NewCard {
         project,
         title,
@@ -1355,13 +1469,17 @@ async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
         body,
     };
     let root = sh.root.clone();
-    let (rel, id, front) = tokio::task::spawn_blocking(move || jc_core::card::materialize(&root, &nc))
-        .await
-        .map_err(|e| Error::internal(e.to_string()))?
-        .map_err(|e| Error::invalid_params(e.to_string()))?;
+    let (rel, id, front) =
+        tokio::task::spawn_blocking(move || jc_core::card::materialize(&root, &nc))
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?
+            .map_err(|e| Error::invalid_params(e.to_string()))?;
     let (rtx, rrx) = oneshot::channel();
     sh.cmd
-        .send(Cmd::RegisterCard { card: rel.clone(), reply: rtx })
+        .send(Cmd::RegisterCard {
+            card: rel.clone(),
+            reply: rtx,
+        })
         .await
         .map_err(|_| Error::internal("writer gone"))?;
     let _ = rrx.await;
@@ -1386,18 +1504,29 @@ async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
 /// `project.add {name, repo?}`
 async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
     let name = require_str(params, "name")?;
-    let repo = params.get("repo").and_then(|v| v.as_str()).map(String::from);
+    let repo = params
+        .get("repo")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let root = sh.root.clone();
     let slug: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
     if slug.is_empty() {
-        return Err(Error::invalid_params("project name needs ascii letters or digits"));
+        return Err(Error::invalid_params(
+            "project name needs ascii letters or digits",
+        ));
     }
     let rel = format!("work/{slug}");
     let abs = root.join(&rel);
@@ -1413,7 +1542,10 @@ async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
     };
     tokio::fs::write(
         abs.join("project.toml"),
-        format!("# jadecode 프로젝트\nname = \"{}\"\nslug = \"{slug}\"\n{repos}", name.replace('"', "'")),
+        format!(
+            "# jadecode 프로젝트\nname = \"{}\"\nslug = \"{slug}\"\n{repos}",
+            name.replace('"', "'")
+        ),
     )
     .await
     .map_err(|e| Error::internal(e.to_string()))?;

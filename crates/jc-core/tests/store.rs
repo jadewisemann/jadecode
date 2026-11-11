@@ -73,15 +73,24 @@ fn reopen_keeps_seq_and_loads_cards() {
     add_cards(&mut ws, &["refine", "implement"], 1);
     {
         let mut s = ws.store().unwrap();
-        s.append(vec![jc_core::NewEvent::new("global", "bot.created", serde_json::json!({}))])
-            .unwrap();
+        s.append(vec![jc_core::NewEvent::new(
+            "global",
+            "bot.created",
+            serde_json::json!({}),
+        )])
+        .unwrap();
         assert_eq!(s.last_seq(), 4); // 프로젝트 생성 1 + 카드 생성 2 + 전역 1
     }
     let (s2, stats, _) = Store::open(&d, Fsync::Batch).unwrap();
     assert_eq!(s2.last_seq(), 4, "{stats:?}");
     assert_eq!(stats.tail_lines, 0, "이미 색인된 줄은 다시 읽지 않는다");
     assert_eq!(stats.cards, 1);
-    assert!(!s2.known_card(&ws.cards().unwrap()[0].rel).unwrap().front.id.is_empty());
+    assert!(!s2
+        .known_card(&ws.cards().unwrap()[0].rel)
+        .unwrap()
+        .front
+        .id
+        .is_empty());
 }
 
 #[test]
@@ -125,8 +134,12 @@ fn seq_gap_after_index_is_discarded_as_unapproved() {
     let cards = add_cards(&mut ws, &["refine"], 1);
     {
         let mut s = ws.store().unwrap();
-        s.append(vec![jc_core::NewEvent::new("global", "a", serde_json::json!({}))])
-            .unwrap();
+        s.append(vec![jc_core::NewEvent::new(
+            "global",
+            "a",
+            serde_json::json!({}),
+        )])
+        .unwrap();
     }
     // 색인에 아직 없는 사이(승인 전)에 seq가 뛴 줄이 들어간 상황을 만든다.
     let jp = d.join("events/global.jsonl");
@@ -178,8 +191,12 @@ fn corrupt_index_is_rebuilt_silently() {
     add_cards(&mut ws, &["refine"], 1);
     {
         let mut s = ws.store().unwrap();
-        s.append(vec![jc_core::NewEvent::new("global", "a", serde_json::json!({}))])
-            .unwrap();
+        s.append(vec![jc_core::NewEvent::new(
+            "global",
+            "a",
+            serde_json::json!({}),
+        )])
+        .unwrap();
     }
     // 색인 파일을 쓰레기로 만든다.
     std::fs::write(d.join(".jadecode/index.sqlite"), b"not a sqlite file").unwrap();
@@ -246,7 +263,10 @@ fn external_status_change_is_rejected_and_reverted() {
     assert!(!now.contains("status: done"), "{now}");
     let j = std::fs::read_to_string(d.join(&rel).join("events.jsonl")).unwrap();
     assert!(j.contains("card.state_change_rejected"), "{j}");
-    assert!(!j.contains("card.file_changed"), "앞머리만 바뀌었으므로 본문 사건은 없다: {j}");
+    assert!(
+        !j.contains("card.file_changed"),
+        "앞머리만 바뀌었으므로 본문 사건은 없다: {j}"
+    );
 }
 
 #[test]
@@ -260,7 +280,11 @@ fn server_front_write_keeps_agent_edits() {
     let mut store = ws.store().unwrap();
     let original = std::fs::read_to_string(&p).unwrap();
     // 외부 편집이 먼저 들어간 상태에서 set_front를 부른다(내부에서 check_card → CAS 순서).
-    std::fs::write(&p, original.replace("## 목표", "## 목표\n\n에이전트가 쓴 내용")).unwrap();
+    std::fs::write(
+        &p,
+        original.replace("## 목표", "## 목표\n\n에이전트가 쓴 내용"),
+    )
+    .unwrap();
     let mut front = cards[0].state.front.clone();
     front.status = "working".into();
     let seqs = store
@@ -268,7 +292,10 @@ fn server_front_write_keeps_agent_edits() {
         .unwrap();
     assert!(!seqs.is_empty());
     let now = std::fs::read_to_string(&p).unwrap();
-    assert!(now.contains("에이전트가 쓴 내용"), "외부 편집을 잃지 않는다:\n{now}");
+    assert!(
+        now.contains("에이전트가 쓴 내용"),
+        "외부 편집을 잃지 않는다:\n{now}"
+    );
     assert!(now.contains("status: working"), "{now}");
     let r = full_check(&d).unwrap();
     assert!(r.ok, "{r:?}");
@@ -290,8 +317,12 @@ fn fsync_off_still_commits_index() {
     add_cards(&mut ws, &["refine"], 1);
     {
         let mut s = ws.store_with(Fsync::Off).unwrap();
-        s.append(vec![jc_core::NewEvent::new("global", "x", serde_json::json!({}))])
-            .unwrap();
+        s.append(vec![jc_core::NewEvent::new(
+            "global",
+            "x",
+            serde_json::json!({}),
+        )])
+        .unwrap();
     }
     let r = full_check(&d).unwrap();
     assert!(r.ok, "{r:?}");

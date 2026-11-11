@@ -15,12 +15,12 @@ use jc_driver::acp::AcpPermission;
 use jc_driver::any::{AgentDriver, SpawnHooks};
 use jc_driver::proc::{instance_dir, DriverConfig};
 use jc_driver::spec::{BotSpec, PermissionPolicy};
-use jc_driver::stream::DriverEvent;
 use jc_driver::stream::AssistantBlock;
+use jc_driver::stream::DriverEvent;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -297,12 +297,15 @@ impl InstanceManager {
     }
 }
 
+/// 권한 대기자들: 요청 seq → 답을 기다리는 송신자.
+type PendingPerms = Arc<Mutex<HashMap<u64, oneshot::Sender<(bool, String)>>>>;
+
 struct Manager {
     root: PathBuf,
     live: HashMap<String, Live>,
     /// 권한 요청 seq → 응답자. 사람 답을 기다리는 일은 별도 태스크로 넘긴다
     /// (관리자 루프가 막히면 깨우기·메시지가 모두 멈춘다).
-    pending_perms: Arc<Mutex<HashMap<u64, oneshot::Sender<(bool, String)>>>>,
+    pending_perms: PendingPerms,
     store_cmd: mpsc::Sender<crate::server::Cmd>,
     claude_bin: String,
     mcp_bin: PathBuf,
@@ -357,12 +360,18 @@ impl Manager {
                 let r = self.start(*spec).await;
                 let _ = reply.send(r);
             }
-            ManagerMsg::Send { instance, text, reply } => {
+            ManagerMsg::Send {
+                instance,
+                text,
+                reply,
+            } => {
                 let r = match self.live.get(&instance) {
                     Some(l) => {
                         let (tx, rx) = oneshot::channel();
                         match l.tx.send(InstMsg::Prompt { text, reply: tx }).await {
-                            Ok(_) => rx.await.unwrap_or_else(|_| Err(anyhow::anyhow!("instance gone"))),
+                            Ok(_) => rx
+                                .await
+                                .unwrap_or_else(|_| Err(anyhow::anyhow!("instance gone"))),
                             Err(_) => Err(anyhow::anyhow!("instance gone")),
                         }
                     }
@@ -375,7 +384,8 @@ impl Manager {
                     Some(l) => {
                         let (tx, rx) = oneshot::channel();
                         let _ = l.tx.send(InstMsg::Stop { reply: tx }).await;
-                        rx.await.unwrap_or_else(|_| Err(anyhow::anyhow!("instance gone")))
+                        rx.await
+                            .unwrap_or_else(|_| Err(anyhow::anyhow!("instance gone")))
                     }
                     None => Err(anyhow::anyhow!("no such instance: {instance}")),
                 };
@@ -385,7 +395,13 @@ impl Manager {
                 let v = self.infos();
                 let _ = reply.send(v);
             }
-            ManagerMsg::Permission { instance, tool, input, tool_use_id, reply } => {
+            ManagerMsg::Permission {
+                instance,
+                tool,
+                input,
+                tool_use_id,
+                reply,
+            } => {
                 // 답을 기다리는 동안 관리자 루프를 막지 않는다.
                 let root = self.root.clone();
                 let store_cmd = self.store_cmd.clone();
@@ -398,13 +414,26 @@ impl Manager {
                     .unwrap_or(25);
                 tokio::spawn(async move {
                     let d = decide_permission_task(
-                        root, store_cmd, pending, infos, instance, tool, input, tool_use_id, timeout_min,
+                        root,
+                        store_cmd,
+                        pending,
+                        infos,
+                        instance,
+                        tool,
+                        input,
+                        tool_use_id,
+                        timeout_min,
                     )
                     .await;
                     let _ = reply.send(d);
                 });
             }
-            ManagerMsg::ResolvePermission { request_seq, allow, message, reply } => {
+            ManagerMsg::ResolvePermission {
+                request_seq,
+                allow,
+                message,
+                reply,
+            } => {
                 let taken = self.pending_perms.lock().unwrap().remove(&request_seq);
                 let r = match taken {
                     Some(tx) => tx
@@ -416,11 +445,15 @@ impl Manager {
             }
             ManagerMsg::Stats { reply } => {
                 let (tx, rx) = oneshot::channel();
-                let _ = self.store_cmd.send(crate::server::Cmd::Stats { reply: tx }).await;
+                let _ = self
+                    .store_cmd
+                    .send(crate::server::Cmd::Stats { reply: tx })
+                    .await;
                 let mut v = rx.await.unwrap_or_else(|_| json!({}));
                 v["instances"] = json!(self.infos());
                 v["pending_permissions"] = json!(self.pending_perms.lock().unwrap().len());
-                v["manager_uptime_ms"] = json!(jc_core::event::now_ms().saturating_sub(self.started));
+                v["manager_uptime_ms"] =
+                    json!(jc_core::event::now_ms().saturating_sub(self.started));
                 let _ = reply.send(v);
             }
         }
@@ -463,7 +496,12 @@ impl Manager {
                 spec.project.clone(),
             ]
             .into_iter()
-            .chain(spec.card.clone().map(|c| vec!["--card".into(), c]).unwrap_or_default())
+            .chain(
+                spec.card
+                    .clone()
+                    .map(|c| vec!["--card".into(), c])
+                    .unwrap_or_default(),
+            )
             .collect(),
             mcp_env: BTreeMap::new(),
             add_dirs: spec.add_dirs.clone(),
@@ -538,8 +576,23 @@ impl Manager {
         let root = self.root.clone();
         let store_cmd = self.store_cmd.clone();
         let spec2 = spec.clone();
-        tokio::spawn(run_instance(spec2, driver, rx, info, store_cmd, root, started_seq));
-        Ok(self.live.get(&spec.id).unwrap().info.lock().unwrap().clone())
+        tokio::spawn(run_instance(
+            spec2,
+            driver,
+            rx,
+            info,
+            store_cmd,
+            root,
+            started_seq,
+        ));
+        Ok(self
+            .live
+            .get(&spec.id)
+            .unwrap()
+            .info
+            .lock()
+            .unwrap()
+            .clone())
     }
 
     /// ACP·Pi 백엔드에 넘길 콜백(권한·파일 쓰기).
@@ -563,43 +616,42 @@ impl Manager {
         let store_cmd = self.store_cmd.clone();
         let pending = self.pending_perms.clone();
         let timeout_min = self.permission_timeout_for(&info);
-        let perm: Arc<dyn Fn(AcpPermission) -> oneshot::Receiver<(bool, String)> + Send + Sync> =
-            Arc::new(move |p: AcpPermission| {
-                let (tx, rx) = oneshot::channel();
-                let root = root.clone();
-                let store_cmd = store_cmd.clone();
-                let pending = pending.clone();
-                let info = info.clone();
-                let input = serde_json::json!({
-                    "title": p.title,
-                    "kind": p.tool_kind,
-                    "toolCall": p.tool_call,
-                });
-                tokio::spawn(async move {
-                    let d = decide_permission_task(
-                        root,
-                        store_cmd,
-                        pending,
-                        vec![info.clone()],
-                        info.id.clone(),
-                        p.tool_kind.clone(),
-                        input,
-                        p.tool_call
-                            .get("toolCallId")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        timeout_min,
-                    )
-                    .await;
-                    let _ = tx.send((d.allow, d.message));
-                });
-                rx
+        let perm: jc_driver::any::PermissionHook = Arc::new(move |p: AcpPermission| {
+            let (tx, rx) = oneshot::channel();
+            let root = root.clone();
+            let store_cmd = store_cmd.clone();
+            let pending = pending.clone();
+            let info = info.clone();
+            let input = serde_json::json!({
+                "title": p.title,
+                "kind": p.tool_kind,
+                "toolCall": p.tool_call,
             });
+            tokio::spawn(async move {
+                let d = decide_permission_task(
+                    root,
+                    store_cmd,
+                    pending,
+                    vec![info.clone()],
+                    info.id.clone(),
+                    p.tool_kind.clone(),
+                    input,
+                    p.tool_call
+                        .get("toolCallId")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    timeout_min,
+                )
+                .await;
+                let _ = tx.send((d.allow, d.message));
+            });
+            rx
+        });
         let store_cmd2 = self.store_cmd.clone();
         let topic = spec.journal_topic();
         let inst = spec.id.clone();
-        let on_file: Arc<dyn Fn(&str, bool) + Send + Sync> = Arc::new(move |path: &str, ok: bool| {
+        let on_file: jc_driver::any::FileHook = Arc::new(move |path: &str, ok: bool| {
             let (tx, _rx) = oneshot::channel();
             let _ = store_cmd2.try_send(crate::server::Cmd::Append {
                 events: vec![NewEvent::new(
@@ -637,29 +689,30 @@ impl Manager {
             return;
         }
         let root = self.root.clone();
-        let rows = tokio::task::spawn_blocking(move || -> Result<Vec<(u64, String, String, String)>> {
-            let conn = index::open_index_ro(&root)?;
-            let mut st = conn.prepare(
+        let rows =
+            tokio::task::spawn_blocking(move || -> Result<Vec<(u64, String, String, String)>> {
+                let conn = index::open_index_ro(&root)?;
+                let mut st = conn.prepare(
                 "SELECT seq, topic, kind, line FROM events WHERE seq > ?1 ORDER BY seq LIMIT 500",
             )?;
-            let from = 0i64;
-            let v = st
-                .query_map([from], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)? as u64,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                    ))
-                })?
-                .filter_map(|x| x.ok())
-                .collect();
-            Ok(v)
-        })
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or_default();
+                let from = 0i64;
+                let v = st
+                    .query_map([from], |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? as u64,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                        ))
+                    })?
+                    .filter_map(|x| x.ok())
+                    .collect();
+                Ok(v)
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
 
         for inst in orchestrators {
             let cursor = *self.wake_cursor.get(&inst.id).unwrap_or(&0);
@@ -683,7 +736,9 @@ impl Manager {
                 if !is_wake_kind(kind) {
                     continue;
                 }
-                let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
                 // 자기 자신이 낸 이벤트는 깨우지 않는다.
                 if v["body"]["actor"]["role"].as_str() == Some("orchestrator") {
                     continue;
@@ -705,7 +760,14 @@ impl Manager {
             let sent = match self.live.get(&inst.id) {
                 Some(l) => {
                     let (tx, rx) = oneshot::channel();
-                    match l.tx.send(InstMsg::Prompt { text: digest, reply: tx }).await {
+                    match l
+                        .tx
+                        .send(InstMsg::Prompt {
+                            text: digest,
+                            reply: tx,
+                        })
+                        .await
+                    {
                         Ok(_) => rx.await.map(|r| r.is_ok()).unwrap_or(false),
                         Err(_) => false,
                     }
@@ -781,7 +843,9 @@ fn digest_text(project: &str, picked: &[(u64, String, Value)]) -> String {
 fn compact_body(b: &Value) -> String {
     let pick = |k: &str| b.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let mut parts = vec![];
-    for k in ["status", "summary", "question", "message", "text", "from", "to"] {
+    for k in [
+        "status", "summary", "question", "message", "text", "from", "to",
+    ] {
         let v = pick(k);
         if !v.is_empty() {
             parts.push(format!("{k}={v}"));
@@ -1019,8 +1083,14 @@ async fn run_instance(
     }
     set_info(&info, |i| i.state = "exited".into());
     if !stopping {
-        emit(&store_cmd, vec![NewEvent::new(topic.clone(), "instance.exited",
-            json!({"instance":spec.id,"turns":turns,"restarts":restarts}))]);
+        emit(
+            &store_cmd,
+            vec![NewEvent::new(
+                topic.clone(),
+                "instance.exited",
+                json!({"instance":spec.id,"turns":turns,"restarts":restarts}),
+            )],
+        );
     }
     let _ = root;
 }
@@ -1078,7 +1148,9 @@ pub fn build_brief(spec: &InstanceSpec) -> String {
             s.push_str("- 카드를 다음 단계로 옮기려면 `card_advance`를 쓴다.\n");
             s.push_str("- 워커 메시지가 오면 다이제스트 사용자 턴으로 전달된다. 처리한 마지막 seq를 `ack`로 남긴다.\n");
             s.push_str("- 사람 결정이 필요하면 `escalate`로 올린다. 네가 승인하지 않는다.\n");
-            s.push_str("- 지금은 사람의 첫 지시를 기다린다. 필요하면 `read_event`로 최근 이벤트를 본다.\n");
+            s.push_str(
+                "- 지금은 사람의 첫 지시를 기다린다. 필요하면 `read_event`로 최근 이벤트를 본다.\n",
+            );
         }
         _ => {}
     }
@@ -1087,7 +1159,7 @@ pub fn build_brief(spec: &InstanceSpec) -> String {
 
 /// 봇 폴더를 읽어 인스턴스 spec을 만든다(서버 RPC에서 쓴다).
 pub fn build_spec(
-    root: &PathBuf,
+    root: &Path,
     id: String,
     role: Role,
     project: String,
@@ -1186,7 +1258,7 @@ pub fn _ctx<T>(r: anyhow::Result<T>) -> anyhow::Result<T> {
 async fn decide_permission_task(
     root: PathBuf,
     store_cmd: mpsc::Sender<crate::server::Cmd>,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<(bool, String)>>>>,
+    pending: PendingPerms,
     infos: Vec<InstanceInfo>,
     instance: String,
     tool: String,
@@ -1247,9 +1319,11 @@ async fn decide_permission_task(
     .ok()
     .and_then(|s| s.parse::<toml::Table>().ok())
     .and_then(|t| {
-        t.get("auto_allow")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        t.get("auto_allow").and_then(|v| v.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
     })
     .unwrap_or_default();
     let blob = input.to_string();

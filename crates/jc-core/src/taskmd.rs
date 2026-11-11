@@ -150,11 +150,15 @@ fn front_mapping(f: &Front) -> Result<serde_yaml::Value> {
 /// 새 카드 문서.
 pub fn render_new_card(f: &Front, body: &str) -> Result<String> {
     let mut m = serde_yaml::Mapping::new();
-    m.insert(serde_yaml::Value::String(FRONT_KEY.into()), front_mapping(f)?);
+    m.insert(
+        serde_yaml::Value::String(FRONT_KEY.into()),
+        front_mapping(f)?,
+    );
     join_task(&m, body)
 }
 
-pub const DEFAULT_BODY: &str = "\n## 목표\n\n## 범위\n\n## 완료 조건\n\n## 결정 사항\n\n## 다음 행동\n";
+pub const DEFAULT_BODY: &str =
+    "\n## 목표\n\n## 범위\n\n## 완료 조건\n\n## 결정 사항\n\n## 다음 행동\n";
 
 #[cfg(test)]
 mod tests {

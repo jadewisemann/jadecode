@@ -1,7 +1,7 @@
 //! 백엔드 공통 드라이버. Claude·OpenCode·omp·pi를 같은 인터페이스로 다룬다.
 
-use crate::agent::AgentKind;
 use crate::acp::{AcpDriver, AcpHost, AcpPermission};
+use crate::agent::AgentKind;
 use crate::pi::PiDriver;
 use crate::proc::{Driver, DriverConfig, DriverState};
 use crate::spec::isolation_mcp_servers;
@@ -12,7 +12,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-/// ACP/Pi 쪽에 넘길 콜백. Claude는 자체 권한 RPC를 쓰므로 쓰지 않는다.
+/// 권한 콜백: 요청을 받아 (허용 여부, 메시지)를 돌려준다.
+pub type PermissionHook =
+    Arc<dyn Fn(AcpPermission) -> oneshot::Receiver<(bool, String)> + Send + Sync>;
+/// 파일 쓰기 콜백: (경로, 성공 여부).
+pub type FileHook = Arc<dyn Fn(&str, bool) + Send + Sync>;
+
 impl std::fmt::Debug for SpawnHooks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpawnHooks")
@@ -22,10 +27,11 @@ impl std::fmt::Debug for SpawnHooks {
     }
 }
 
+/// ACP/Pi 쪽에 넘길 콜백. Claude는 자체 권한 RPC를 쓰므로 쓰지 않는다.
 #[derive(Clone, Default)]
 pub struct SpawnHooks {
-    pub permission: Option<Arc<dyn Fn(AcpPermission) -> oneshot::Receiver<(bool, String)> + Send + Sync>>,
-    pub on_file: Option<Arc<dyn Fn(&str, bool) + Send + Sync>>,
+    pub permission: Option<PermissionHook>,
+    pub on_file: Option<FileHook>,
 }
 
 /// 실행 중인 에이전트 하나.
@@ -39,9 +45,7 @@ impl AgentDriver {
     /// `DriverConfig.agent`에 맞는 백엔드를 띄운다.
     pub async fn spawn(mut config: DriverConfig, hooks: SpawnHooks) -> Result<Self> {
         match config.agent {
-            AgentKind::Claude => Ok(AgentDriver::Claude(Box::new(
-                Driver::spawn(config).await?,
-            ))),
+            AgentKind::Claude => Ok(AgentDriver::Claude(Box::new(Driver::spawn(config).await?))),
             AgentKind::OpenCode | AgentKind::Omp => {
                 let files = config.prepare()?;
                 let bin = config.bin().to_string();
@@ -240,18 +244,16 @@ pub fn resolve_bin(kind: AgentKind, explicit: Option<&str>) -> Result<String> {
 
 /// 설치 여부·버전을 본다(`agents.list` RPC).
 pub fn probe(kind: AgentKind, explicit: Option<&str>) -> Value {
-    let bin = explicit
-        .map(String::from)
-        .or_else(|| {
-            std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("command -v {}", kind.default_bin()))
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
+    let bin = explicit.map(String::from).or_else(|| {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {}", kind.default_bin()))
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
     let (available, version) = match &bin {
         Some(b) => {
             let out = std::process::Command::new(b)

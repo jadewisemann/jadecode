@@ -235,9 +235,13 @@ impl Tools {
     /// 호출 하나를 처리하고 MCP `content` 응답을 만든다.
     pub fn call(&self, name: &str, args: &Value) -> Value {
         match self.call_inner(name, args) {
-            Ok(v) => json!({"content": [{"type": "text", "text": serde_json::to_string(&v).unwrap_or_default()}],
-                            "isError": false}),
-            Err(e) => json!({"content": [{"type": "text", "text": format!("error: {e}")}], "isError": true}),
+            Ok(v) => {
+                json!({"content": [{"type": "text", "text": serde_json::to_string(&v).unwrap_or_default()}],
+                            "isError": false})
+            }
+            Err(e) => {
+                json!({"content": [{"type": "text", "text": format!("error: {e}")}], "isError": true})
+            }
         }
     }
 
@@ -267,7 +271,11 @@ impl Tools {
                     "evidence": args.get("evidence").cloned().unwrap_or(json!([])),
                     "actor": actor,
                 });
-                let kind = if status == "done" { "msg.report_done" } else { "msg.report" };
+                let kind = if status == "done" {
+                    "msg.report_done"
+                } else {
+                    "msg.report"
+                };
                 // 보고가 곧 상태 신호다. 카드 상태 칸도 함께 움직인다.
                 if let Some(card) = &self.handle.card {
                     let st = match status {
@@ -277,7 +285,10 @@ impl Tools {
                     };
                     let _ = self.rpc("card.set_status", json!({"card": card, "status": st}));
                 }
-                self.rpc("events.append", json!({"topic": self.topic(), "kind": kind, "body": body}))
+                self.rpc(
+                    "events.append",
+                    json!({"topic": self.topic(), "kind": kind, "body": body}),
+                )
             }
             "ask" => {
                 let q = args["question"].as_str().unwrap_or("");
@@ -289,7 +300,10 @@ impl Tools {
                     "options": args.get("options").cloned().unwrap_or(json!([])),
                     "actor": actor,
                 });
-                self.rpc("events.append", json!({"topic": self.topic(), "kind": "msg.ask", "body": body}))
+                self.rpc(
+                    "events.append",
+                    json!({"topic": self.topic(), "kind": "msg.ask", "body": body}),
+                )
             }
             "propose" => {
                 let s = args["summary"].as_str().unwrap_or("");
@@ -302,7 +316,10 @@ impl Tools {
                     "kind": "human_procedure",
                     "actor": actor,
                 });
-                self.rpc("events.append", json!({"topic": self.topic(), "kind": "msg.propose", "body": body}))
+                self.rpc(
+                    "events.append",
+                    json!({"topic": self.topic(), "kind": "msg.propose", "body": body}),
+                )
             }
             "error" => {
                 let m = args["message"].as_str().unwrap_or("");
@@ -334,19 +351,29 @@ impl Tools {
             "ack" => {
                 let upto = args["upto"].as_u64().unwrap_or(0);
                 let body = json!({"upto": upto, "actor": actor});
-                self.rpc("events.append", json!({"topic": self.topic(), "kind": "msg.ack", "body": body}))
+                self.rpc(
+                    "events.append",
+                    json!({"topic": self.topic(), "kind": "msg.ack", "body": body}),
+                )
             }
             "send" | "reply" => {
                 let inst = args["instance"].as_str().unwrap_or("");
                 let text = args["text"].as_str().unwrap_or("");
-                let kind = if name == "reply" { "msg.reply" } else { "msg.instruction" };
+                let kind = if name == "reply" {
+                    "msg.reply"
+                } else {
+                    "msg.instruction"
+                };
                 let body = json!({
                     "to": inst,
                     "text": text,
                     "reply_to": args.get("reply_to").cloned().unwrap_or(Value::Null),
                     "actor": actor,
                 });
-                let seq = self.rpc("events.append", json!({"topic": self.topic(), "kind": kind, "body": body}))?;
+                let seq = self.rpc(
+                    "events.append",
+                    json!({"topic": self.topic(), "kind": kind, "body": body}),
+                )?;
                 let _ = self.rpc("instance.send", json!({"instance": inst, "text": text}));
                 Ok(seq)
             }
@@ -357,13 +384,13 @@ impl Tools {
                     "escalated_from": args.get("escalated_from").cloned().unwrap_or(Value::Null),
                     "actor": actor,
                 });
-                self.rpc("events.append", json!({"topic": self.topic(), "kind": "msg.escalation", "body": body}))
+                self.rpc(
+                    "events.append",
+                    json!({"topic": self.topic(), "kind": "msg.escalation", "body": body}),
+                )
             }
             "card_add" => {
-                let project = self
-                    .handle
-                    .project
-                    .clone();
+                let project = self.handle.project.clone();
                 let project = args
                     .get("project")
                     .and_then(|v| v.as_str())
@@ -450,7 +477,14 @@ mod tests {
             .iter()
             .map(|x| x["name"].as_str().unwrap().to_string())
             .collect();
-        for n in ["report", "ask", "propose", "error", "read_card", "permission"] {
+        for n in [
+            "report",
+            "ask",
+            "propose",
+            "error",
+            "read_card",
+            "permission",
+        ] {
             assert!(names.contains(&n.to_string()), "{names:?}");
         }
     }
@@ -470,8 +504,15 @@ mod tests {
             .map(|x| x["name"].as_str().unwrap().to_string())
             .collect();
         for n in [
-            "ack", "send", "reply", "escalate", "read_event", "card_add", "card_advance",
-            "instance_start", "permission",
+            "ack",
+            "send",
+            "reply",
+            "escalate",
+            "read_event",
+            "card_add",
+            "card_advance",
+            "instance_start",
+            "permission",
         ] {
             assert!(names.contains(&n.to_string()), "{names:?}");
         }

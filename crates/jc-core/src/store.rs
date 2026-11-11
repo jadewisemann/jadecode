@@ -110,7 +110,9 @@ impl Store {
         let mut known_off: HashMap<String, u64> = HashMap::new();
         {
             let mut s = conn.prepare("SELECT path, off FROM journals")?;
-            for r in s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))? {
+            for r in s.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })? {
                 let (p, o) = r?;
                 known_off.insert(p, o);
             }
@@ -141,7 +143,11 @@ impl Store {
             f.seek(SeekFrom::Start(off))?;
             let mut buf = Vec::with_capacity((len - off) as usize);
             f.read_to_end(&mut buf)?;
-            let complete = buf.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+            let complete = buf
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
             if complete < buf.len() {
                 st.torn_lines_truncated += 1;
                 st.torn_bytes += (buf.len() - complete) as u64;
@@ -227,7 +233,14 @@ impl Store {
                     .ok()
                     .and_then(|v| v.get("ts").and_then(|x| x.as_u64()))
                     .unwrap_or(0);
-                ins.execute(params![t.seq as i64, ts as i64, t.topic, t.kind, t.journal, t.line])?;
+                ins.execute(params![
+                    t.seq as i64,
+                    ts as i64,
+                    t.topic,
+                    t.kind,
+                    t.journal,
+                    t.line
+                ])?;
             }
             let mut up = tx.prepare(
                 "INSERT INTO journals(path,off,last_seq) VALUES(?1,?2,?3)
@@ -238,7 +251,11 @@ impl Store {
                 lastj.insert(t.journal.as_str(), t.seq);
             }
             for (j, len) in &jlen {
-                up.execute(params![j, *len as i64, *lastj.get(j.as_str()).unwrap_or(&0) as i64])?;
+                up.execute(params![
+                    j,
+                    *len as i64,
+                    *lastj.get(j.as_str()).unwrap_or(&0) as i64
+                ])?;
             }
             tx.execute(
                 "INSERT OR REPLACE INTO meta(k,v) VALUES('last_seq',?1)",
@@ -290,8 +307,15 @@ impl Store {
                         Some(old) if old.file_hash == row.file_hash => {}
                         other => {
                             up.execute(params![
-                                row.path, row.id, row.title, row.project, row.stage, row.status,
-                                row.file_hash, row.id_hash, row.body_hash
+                                row.path,
+                                row.id,
+                                row.title,
+                                row.project,
+                                row.stage,
+                                row.status,
+                                row.file_hash,
+                                row.id_hash,
+                                row.body_hash
                             ])?;
                             if let Some(old) = other {
                                 st.cards_reconciled += 1;
@@ -358,7 +382,7 @@ impl Store {
             self.pending_group = 0;
             return Ok(());
         }
-        let paths: Vec<String> = self.dirty.drain(..).collect();
+        let paths: Vec<String> = std::mem::take(&mut self.dirty);
         for j in &paths {
             self.file(j)?.sync_data()?;
         }
@@ -389,7 +413,8 @@ impl Store {
         }
         let mut out = Vec::with_capacity(evs.len());
         // (seq, ts, topic, kind, journal, line, end_offset)
-        let mut rows: Vec<(u64, u64, String, String, String, String, u64)> = Vec::with_capacity(evs.len());
+        let mut rows: Vec<(u64, u64, String, String, String, String, u64)> =
+            Vec::with_capacity(evs.len());
         let mut touched: Vec<String> = vec![];
         let ts = now_ms();
         for e in &evs {
@@ -550,8 +575,14 @@ impl Store {
             }
         };
         let mut evs = vec![];
-        let jc_changed = prev.as_ref().map(|p| p.id_hash != cs.id_hash).unwrap_or(false);
-        let body_changed = prev.as_ref().map(|p| p.body_hash != cs.body_hash).unwrap_or(true);
+        let jc_changed = prev
+            .as_ref()
+            .map(|p| p.id_hash != cs.id_hash)
+            .unwrap_or(false);
+        let body_changed = prev
+            .as_ref()
+            .map(|p| p.body_hash != cs.body_hash)
+            .unwrap_or(true);
         if body_changed {
             evs.push(NewEvent::new(
                 card_topic(card),
@@ -609,7 +640,13 @@ pub fn acquire_writer_lock(root: &Path) -> Result<File> {
     let dir = root.join(".jadecode");
     fs::create_dir_all(&dir)?;
     let p = dir.join("writer.lock");
-    let f = OpenOptions::new().create(true).read(true).write(true).open(&p)?;
+    // 잠금 파일은 비우면 안 된다(다른 프로세스가 잡고 있을 수 있다). truncate 하지 않는다.
+    let f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&p)?;
     let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if r != 0 {
         let e = std::io::Error::last_os_error();
@@ -703,6 +740,7 @@ fn exchange(_a: &Path, _b: &Path) -> Result<bool> {
 fn save_recovery(root: &Path, j: &str, bytes: &[u8], why: &str) -> Result<()> {
     let d = root.join(".jadecode/recovery");
     fs::create_dir_all(&d)?;
+    // 복구 기록은 덧붙이기만 한다(open_options: create + append).
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
@@ -805,7 +843,13 @@ pub fn full_check(root: &Path) -> Result<CheckReport> {
                 |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?)),
             )
             .ok();
-        if row != Some((cs.file_hash.clone(), cs.front.stage.clone(), cs.front.status.clone())) {
+        if row
+            != Some((
+                cs.file_hash.clone(),
+                cs.front.stage.clone(),
+                cs.front.status.clone(),
+            ))
+        {
             r.card_projection_mismatch += 1;
         }
     }
@@ -828,9 +872,15 @@ pub fn read_tail(root: &Path, topics: &[String], limit: u64) -> Result<Vec<serde
     let conn = index::open_index_ro(root)?;
     let (cond, args) = crate::topic::topic_sql(topics, 2);
     let last: i64 = conn
-        .query_row("SELECT COALESCE((SELECT v FROM meta WHERE k='last_seq'),0)", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE((SELECT v FROM meta WHERE k='last_seq'),0)",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
-    let sql = format!("SELECT line FROM events WHERE seq <= ?1 AND ({cond}) ORDER BY seq DESC LIMIT {limit}");
+    let sql = format!(
+        "SELECT line FROM events WHERE seq <= ?1 AND ({cond}) ORDER BY seq DESC LIMIT {limit}"
+    );
     let mut st = conn.prepare(&sql)?;
     let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(last)];
     for a in &args {

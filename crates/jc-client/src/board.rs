@@ -383,7 +383,8 @@ impl Board {
                 let t: String = t.to_string();
                 if let Ok(v) = serde_json::from_str::<Value>(&t) {
                     if v.get("method").and_then(|m| m.as_str()) == Some("events.event") {
-                        if let Ok(e) = serde_json::from_value::<EventRow>(v["params"]["event"].clone())
+                        if let Ok(e) =
+                            serde_json::from_value::<EventRow>(v["params"]["event"].clone())
                         {
                             rows.push(e);
                         }
@@ -511,11 +512,10 @@ impl Board {
 
     fn card_mut(&mut self, topic: &str) -> Option<&mut Card> {
         let path = card_path_from_topic(topic);
-        let idx = self
-            .snapshot
-            .cards
-            .iter()
-            .position(|c| c.path == path || c.path.ends_with(&path) || topic.ends_with(&c.path))?;
+        let idx =
+            self.snapshot.cards.iter().position(|c| {
+                c.path == path || c.path.ends_with(&path) || topic.ends_with(&c.path)
+            })?;
         self.snapshot.cards.get_mut(idx)
     }
 
@@ -557,7 +557,12 @@ impl Board {
         Ok(())
     }
 
-    pub async fn start_worker(&mut self, project: &str, card: &str, agent: Option<&str>) -> Result<()> {
+    pub async fn start_worker(
+        &mut self,
+        project: &str,
+        card: &str,
+        agent: Option<&str>,
+    ) -> Result<()> {
         let mut p = json!({"role":"worker","project":project,"card":card,"bot":"worker"});
         if let Some(a) = agent {
             p["agent"] = json!(a);
@@ -609,27 +614,50 @@ mod tests {
     #[test]
     fn applies_card_lifecycle() {
         let mut b = board();
-        b.apply(&ev(1, "project/api/card/c1", "card.created",
-            json!({"id":"01A","title":"로그인","project":"api","path":["refine","implement"]})));
+        b.apply(&ev(
+            1,
+            "project/api/card/c1",
+            "card.created",
+            json!({"id":"01A","title":"로그인","project":"api","path":["refine","implement"]}),
+        ));
         assert_eq!(b.snapshot.cards.len(), 1);
         let c = &b.snapshot.cards[0];
         assert_eq!(c.stage, "refine");
         assert_eq!(c.status, "idle");
         assert_eq!(c.path, "work/api/c1");
         // 중복 생성은 무시
-        b.apply(&ev(2, "project/api/card/c1", "card.created", json!({"id":"01A"})));
+        b.apply(&ev(
+            2,
+            "project/api/card/c1",
+            "card.created",
+            json!({"id":"01A"}),
+        ));
         assert_eq!(b.snapshot.cards.len(), 1);
         // 단계/상태 변화
-        b.apply(&ev(3, "project/api/card/c1", "card.stage_changed", json!({"from":"refine","to":"implement"})));
+        b.apply(&ev(
+            3,
+            "project/api/card/c1",
+            "card.stage_changed",
+            json!({"from":"refine","to":"implement"}),
+        ));
         assert_eq!(b.snapshot.cards[0].stage, "implement");
-        b.apply(&ev(4, "project/api/card/c1", "card.status_changed", json!({"from":"idle","to":"working"})));
+        b.apply(&ev(
+            4,
+            "project/api/card/c1",
+            "card.status_changed",
+            json!({"from":"idle","to":"working"}),
+        ));
         assert_eq!(b.snapshot.cards[0].status, "working");
     }
 
     #[test]
     fn stages_and_columns() {
         let mut s = BoardSnapshot::default();
-        for (id, stage, project) in [("a","refine","api"),("b","implement","api"),("c","refine","web")] {
+        for (id, stage, project) in [
+            ("a", "refine", "api"),
+            ("b", "implement", "api"),
+            ("c", "refine", "web"),
+        ] {
             s.cards.push(Card {
                 path: format!("work/{project}/{id}"),
                 id: id.into(),
@@ -653,12 +681,27 @@ mod tests {
             json!({"instance":"i1","role":"worker","agent":"omp","bot":"worker","card":"work/api/c1","project":"api"})));
         assert_eq!(b.snapshot.instances[0].agent, "omp");
         assert_eq!(b.snapshot.instances[0].state, "starting");
-        b.apply(&ev(2, "instance/i1", "instance.init", json!({"instance":"i1"})));
+        b.apply(&ev(
+            2,
+            "instance/i1",
+            "instance.init",
+            json!({"instance":"i1"}),
+        ));
         assert_eq!(b.snapshot.instances[0].state, "idle");
-        b.apply(&ev(3, "instance/i1", "instance.turn_end", json!({"instance":"i1","turn":3})));
+        b.apply(&ev(
+            3,
+            "instance/i1",
+            "instance.turn_end",
+            json!({"instance":"i1","turn":3}),
+        ));
         assert_eq!(b.snapshot.instances[0].turns, 3);
         assert_eq!(b.snapshot.instances_of("work/api/c1").len(), 1);
-        b.apply(&ev(4, "instance/i1", "instance.exited", json!({"instance":"i1"})));
+        b.apply(&ev(
+            4,
+            "instance/i1",
+            "instance.exited",
+            json!({"instance":"i1"}),
+        ));
         assert!(b.snapshot.instances.is_empty());
     }
 
@@ -668,18 +711,32 @@ mod tests {
         b.apply(&ev(10, "project/api/card/c1", "permission.requested",
             json!({"instance":"i1","tool":"Bash","input":{"command":"chmod +x x"},"request_seq":10})));
         assert_eq!(b.snapshot.pending_permissions.len(), 1);
-        b.apply(&ev(11, "project/api/card/c1", "permission.resolved",
-            json!({"request_seq":10,"decision":"allow"})));
+        b.apply(&ev(
+            11,
+            "project/api/card/c1",
+            "permission.resolved",
+            json!({"request_seq":10,"decision":"allow"}),
+        ));
         assert!(b.snapshot.pending_permissions.is_empty());
     }
 
     #[test]
     fn messages_ignore_auto_reports() {
         let mut b = board();
-        b.apply(&ev(1, "t", "msg.report", json!({"summary":"x","auto":true})));
+        b.apply(&ev(
+            1,
+            "t",
+            "msg.report",
+            json!({"summary":"x","auto":true}),
+        ));
         assert!(b.snapshot.messages.is_empty());
         b.apply(&ev(2, "t", "msg.report", json!({"summary":"real"})));
-        b.apply(&ev(3, "t", "msg.report_done", json!({"status":"done","summary":"ok"})));
+        b.apply(&ev(
+            3,
+            "t",
+            "msg.report_done",
+            json!({"status":"done","summary":"ok"}),
+        ));
         assert_eq!(b.snapshot.messages.len(), 2);
     }
 
@@ -687,7 +744,12 @@ mod tests {
     fn caps_messages() {
         let mut b = board();
         for i in 0..600 {
-            b.apply(&ev(i + 1, "t", "msg.report", json!({"summary": format!("{i}")})));
+            b.apply(&ev(
+                i + 1,
+                "t",
+                "msg.report",
+                json!({"summary": format!("{i}")}),
+            ));
         }
         assert_eq!(b.snapshot.messages.len(), 500);
         assert_eq!(b.snapshot.messages.last().unwrap().seq, 600);

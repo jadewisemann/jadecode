@@ -69,7 +69,10 @@ impl AgentKind {
 
     /// 구조화된 MCP 도구를 줄 수 있는가(pi는 확장으로 대신한다).
     pub fn supports_mcp(&self) -> bool {
-        matches!(self, AgentKind::Claude | AgentKind::OpenCode | AgentKind::Omp)
+        matches!(
+            self,
+            AgentKind::Claude | AgentKind::OpenCode | AgentKind::Omp
+        )
     }
 
     /// 파일 쓰기를 클라이언트가 대신 하는가(ACP는 클라이언트 fs).

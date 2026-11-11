@@ -91,7 +91,11 @@ pub const PERMISSIONS_ORCHESTRATOR: &str = r#"{
 pub fn install(root: &Path) -> Result<Vec<String>> {
     let mut created = vec![];
     let bots: &[(&str, &str, &str)] = &[
-        ("orchestrator", BOT_TOML_ORCHESTRATOR, ORCHESTRATOR_INSTRUCTIONS),
+        (
+            "orchestrator",
+            BOT_TOML_ORCHESTRATOR,
+            ORCHESTRATOR_INSTRUCTIONS,
+        ),
         ("worker", BOT_TOML_WORKER, WORKER_INSTRUCTIONS),
         ("reviewer", BOT_TOML_WORKER, REVIEW_INSTRUCTIONS),
         ("researcher", BOT_TOML_WORKER, RESEARCH_INSTRUCTIONS),
@@ -100,7 +104,10 @@ pub fn install(root: &Path) -> Result<Vec<String>> {
         let dir = root.join("bots").join(name);
         std::fs::create_dir_all(&dir)?;
         let toml = toml.replace("name = \"worker\"", &format!("name = \"{name}\""));
-        let toml = toml.replace("title = \"개발 봇\"", &format!("title = \"{}\"", title_of(name)));
+        let toml = toml.replace(
+            "title = \"개발 봇\"",
+            &format!("title = \"{}\"", title_of(name)),
+        );
         write_if_absent(&dir.join("bot.toml"), &toml)?;
         write_if_absent(&dir.join("instructions.md"), instructions)?;
         std::fs::create_dir_all(dir.join("memory"))?;
@@ -158,7 +165,11 @@ mod tests {
 
     #[test]
     fn installs_four_bots_and_policy() {
-        let d = std::env::temp_dir().join(format!("jc-bots-{}-{}", std::process::id(), crate::ulid::new_id()));
+        let d = std::env::temp_dir().join(format!(
+            "jc-bots-{}-{}",
+            std::process::id(),
+            crate::ulid::new_id()
+        ));
         std::fs::create_dir_all(&d).unwrap();
         let made = install(&d).unwrap();
         assert_eq!(made.len(), 5, "{made:?}");
@@ -174,6 +185,9 @@ mod tests {
         // 두 번 불러도 덮어쓰지 않는다
         std::fs::write(d.join("bots/worker/instructions.md"), "custom").unwrap();
         install(&d).unwrap();
-        assert_eq!(std::fs::read_to_string(d.join("bots/worker/instructions.md")).unwrap(), "custom");
+        assert_eq!(
+            std::fs::read_to_string(d.join("bots/worker/instructions.md")).unwrap(),
+            "custom"
+        );
     }
 }

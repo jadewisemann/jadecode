@@ -3,11 +3,11 @@
 //! 기본은 건너뛴다. `JADECODE_LIVE=1 cargo test -p jc-driver --test live -- --nocapture`로 돌린다.
 //! 스파이크 S1·S2가 확인한 것을 코드가 계속 지키는지 보는 계약 테스트다.
 
+use jc_driver::proc::dud_cmd;
 use jc_driver::proc::{Driver, DriverConfig};
 use jc_driver::spec::{BotSpec, PermissionPolicy};
 use jc_driver::stream::{AssistantBlock, DriverEvent};
 use std::collections::BTreeMap;
-use jc_driver::proc::dud_cmd;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -97,7 +97,9 @@ async fn live_one_process_two_turns_and_stable_session_id() {
     let init = evs1
         .iter()
         .find_map(|e| match e {
-            DriverEvent::Init { session_id, model, .. } => Some((session_id.clone(), model.clone())),
+            DriverEvent::Init {
+                session_id, model, ..
+            } => Some((session_id.clone(), model.clone())),
             _ => None,
         })
         .expect("init event");
@@ -111,7 +113,10 @@ async fn live_one_process_two_turns_and_stable_session_id() {
         .expect("result");
     assert!(!r1.1, "첫 턴 오류: {:?}", r1.0);
     assert!(
-        r1.0.as_deref().unwrap_or("").to_lowercase().contains("first"),
+        r1.0.as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("first"),
         "{:?}",
         r1.0
     );
@@ -127,13 +132,14 @@ async fn live_one_process_two_turns_and_stable_session_id() {
         })
         .expect("second result");
     assert!(
-        r2.as_deref().unwrap_or("").to_lowercase().contains("second"),
+        r2.as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("second"),
         "{r2:?}"
     );
     // init이 턴마다 다시 온다(S3)
-    assert!(evs2
-        .iter()
-        .any(|e| matches!(e, DriverEvent::Init { .. })));
+    assert!(evs2.iter().any(|e| matches!(e, DriverEvent::Init { .. })));
     d.terminate().await.ok();
 }
 
@@ -153,7 +159,10 @@ async fn live_usage_is_reported_per_turn() {
             _ => None,
         })
         .expect("result");
-    assert!(usage.total_tokens() > 0, "턴별 사용량이 와야 한다: {usage:?}");
+    assert!(
+        usage.total_tokens() > 0,
+        "턴별 사용량이 와야 한다: {usage:?}"
+    );
     d.terminate().await.ok();
 }
 
@@ -204,9 +213,11 @@ async fn live_denied_bash_comes_back_without_hanging() {
     }
     let (_root, cfg) = setup("deny");
     let mut d = Driver::spawn(cfg).await.expect("spawn");
-    d.prompt("Run this exact bash command: git push origin main. Then report in one line what happened.")
-        .await
-        .unwrap();
+    d.prompt(
+        "Run this exact bash command: git push origin main. Then report in one line what happened.",
+    )
+    .await
+    .unwrap();
     let evs = drain_until_result(&mut d).await;
     // 조용히 멈추지 않고 result가 와야 한다
     assert!(
@@ -215,9 +226,9 @@ async fn live_denied_bash_comes_back_without_hanging() {
     );
     // deny 규칙에 걸려 도구 결과가 오류로 돌아왔는지
     let tool_err = evs.iter().any(|e| match e {
-        DriverEvent::ToolResults { blocks } => blocks.iter().any(|b| {
-            matches!(b, AssistantBlock::ToolResult { is_error, .. } if *is_error)
-        }),
+        DriverEvent::ToolResults { blocks } => blocks
+            .iter()
+            .any(|b| matches!(b, AssistantBlock::ToolResult { is_error, .. } if *is_error)),
         _ => false,
     });
     let denied_early = evs.iter().any(|e| match e {
@@ -238,18 +249,26 @@ async fn live_user_settings_are_isolated() {
     }
     let (_root, cfg) = setup("isolate");
     let mut d = Driver::spawn(cfg).await.expect("spawn");
-    d.prompt("List the names of any MCP servers you were given, comma separated. If none, write NONE.")
-        .await
-        .unwrap();
+    d.prompt(
+        "List the names of any MCP servers you were given, comma separated. If none, write NONE.",
+    )
+    .await
+    .unwrap();
     let evs = drain_until_result(&mut d).await;
     let init = evs.iter().find_map(|e| match e {
         DriverEvent::Init { mcp_servers, .. } => Some(mcp_servers.clone()),
         _ => None,
     });
     // --strict-mcp-config + mcp.json(더미 명령)이면 사용자 커넥터 MCP는 보이지 않는다.
-    let names: Vec<String> = init.unwrap_or_default().into_iter().map(|m| m.name).collect();
+    let names: Vec<String> = init
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
     assert!(
-        !names.iter().any(|n| n.contains("claude_ai") || n.contains("connector")),
+        !names
+            .iter()
+            .any(|n| n.contains("claude_ai") || n.contains("connector")),
         "사용자 커넥터 MCP가 샜다: {names:?}"
     );
     d.terminate().await.ok();

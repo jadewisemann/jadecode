@@ -77,7 +77,11 @@ fn main() -> Result<()> {
             let (ws, created) = Workspace::init(dir, &name)?;
             println!(
                 "{} {}",
-                if created { "created" } else { "exists (left as is)" },
+                if created {
+                    "created"
+                } else {
+                    "exists (left as is)"
+                },
                 ws.root.display()
             );
             Ok(())
@@ -94,7 +98,10 @@ fn main() -> Result<()> {
                             "project.add",
                             json!({"name": name, "repo": repo}),
                         ))?;
-                        println!("{}", ws.root.join(out["path"].as_str().unwrap_or("")).display());
+                        println!(
+                            "{}",
+                            ws.root.join(out["path"].as_str().unwrap_or("")).display()
+                        );
                         return Ok(());
                     }
                     let p = ws.add_project(name, repo.as_deref())?;
@@ -133,7 +140,10 @@ fn main() -> Result<()> {
                             json!({"project":project,"title":title,"path":path,"repos":repos,
                                    "depends_on":depends_on,"parent":parent}),
                         ))?;
-                        println!("{}", ws.root.join(out["path"].as_str().unwrap_or("")).display());
+                        println!(
+                            "{}",
+                            ws.root.join(out["path"].as_str().unwrap_or("")).display()
+                        );
                         return Ok(());
                     }
                     let p = ws.add_card(NewCard {
@@ -170,7 +180,10 @@ fn main() -> Result<()> {
                 Some("show") => {
                     let needle = args.get(2).context("card show <card>")?;
                     let c = ws.find_card(needle)?;
-                    print!("{}", std::fs::read_to_string(ws.root.join(&c.rel).join("task.md"))?);
+                    print!(
+                        "{}",
+                        std::fs::read_to_string(ws.root.join(&c.rel).join("task.md"))?
+                    );
                     Ok(())
                 }
                 Some("status") => {
@@ -206,11 +219,8 @@ fn main() -> Result<()> {
                     };
                     let from = c.state.front.stage.clone();
                     if let Some(sock) = server_up(&ws, &args) {
-                        let out = rt().block_on(rpc_call(
-                            &sock,
-                            "card.advance",
-                            json!({"card": c.rel}),
-                        ))?;
+                        let out =
+                            rt().block_on(rpc_call(&sock, "card.advance", json!({"card": c.rel})))?;
                         println!(
                             "{}\t{}\t{}",
                             c.rel,
@@ -286,7 +296,8 @@ fn main() -> Result<()> {
             let sock = socket_path(&ws, &args);
             if args.get(1).map(|s| s.as_str()) == Some("add") {
                 let name = args.get(2).context("bot add <name> --agent <a>")?;
-                let agent = flag_value(&args, "--agent").context("--agent claude|opencode|omp|pi")?;
+                let agent =
+                    flag_value(&args, "--agent").context("--agent claude|opencode|omp|pi")?;
                 jc_driver::AgentKind::parse(&agent)?;
                 let model = flag_value(&args, "--model");
                 let dir = ws.root.join("bots").join(name);
@@ -294,9 +305,8 @@ fn main() -> Result<()> {
                     bail!("bot exists: {name}");
                 }
                 std::fs::create_dir_all(dir.join("memory"))?;
-                let mut toml = format!(
-                    "name = \"{name}\"\ntitle = \"{name}\"\nagent = \"{agent}\"\n",
-                );
+                let mut toml =
+                    format!("name = \"{name}\"\ntitle = \"{name}\"\nagent = \"{agent}\"\n",);
                 if let Some(m) = &model {
                     toml.push_str(&format!("model = \"{m}\"\n"));
                 }
@@ -328,17 +338,29 @@ fn main() -> Result<()> {
             let sock = socket_path(&ws, &args);
             let out = rt().block_on(rpc_call(&sock, "agents.list", json!({})))?;
             println!(
-                "{:<10} {:<20} {:<8} {:<8} {:<10} {}",
-                "agent", "protocol", "ready", "mcp", "client-fs", "version"
+                "{:<10} {:<20} {:<8} {:<8} {:<10} version",
+                "agent", "protocol", "ready", "mcp", "client-fs"
             );
             for a in out["agents"].as_array().cloned().unwrap_or_default() {
                 println!(
                     "{:<10} {:<20} {:<8} {:<8} {:<10} {}",
                     a["agent"].as_str().unwrap_or(""),
                     a["protocol"].as_str().unwrap_or(""),
-                    if a["available"].as_bool().unwrap_or(false) { "yes" } else { "NO" },
-                    if a["supports_mcp"].as_bool().unwrap_or(false) { "yes" } else { "no" },
-                    if a["client_writes_files"].as_bool().unwrap_or(false) { "client" } else { "agent" },
+                    if a["available"].as_bool().unwrap_or(false) {
+                        "yes"
+                    } else {
+                        "NO"
+                    },
+                    if a["supports_mcp"].as_bool().unwrap_or(false) {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    if a["client_writes_files"].as_bool().unwrap_or(false) {
+                        "client"
+                    } else {
+                        "agent"
+                    },
                     a["version"].as_str().unwrap_or(""),
                 );
             }
@@ -402,7 +424,11 @@ fn main() -> Result<()> {
                     let bot = args.get(2).context("instance start <bot> --project <p>")?;
                     let project = flag_value(&args, "--project").context("--project <p>")?;
                     let role = flag_value(&args, "--role").unwrap_or_else(|| {
-                        if bot == "orchestrator" { "orchestrator".into() } else { "worker".into() }
+                        if bot == "orchestrator" {
+                            "orchestrator".into()
+                        } else {
+                            "worker".into()
+                        }
                     });
                     let mut params = json!({"role": role, "project": project, "bot": bot});
                     if let Some(c) = flag_value(&args, "--card") {
@@ -437,11 +463,8 @@ fn main() -> Result<()> {
                 }
                 Some("stop") => {
                     let inst = args.get(2).context("instance stop <instance>")?;
-                    let out = rt().block_on(rpc_call(
-                        &sock,
-                        "instance.stop",
-                        json!({"instance": inst}),
-                    ))?;
+                    let out =
+                        rt().block_on(rpc_call(&sock, "instance.stop", json!({"instance": inst})))?;
                     println!("{}", out);
                     Ok(())
                 }
@@ -489,7 +512,11 @@ fn main() -> Result<()> {
                         .parse()?;
                     let msg = args[3..].join(" ");
                     let msg = if msg.trim().is_empty() {
-                        if allow { "사람이 승인함".to_string() } else { "사람이 거절함".to_string() }
+                        if allow {
+                            "사람이 승인함".to_string()
+                        } else {
+                            "사람이 거절함".to_string()
+                        }
                     } else {
                         msg
                     };
@@ -524,7 +551,8 @@ fn main() -> Result<()> {
             let sock = socket_path(&ws, &args);
             rt().block_on(async move {
                 let stream = tokio::net::UnixStream::connect(&sock).await?;
-                let (ws, _resp) = tokio_tungstenite::client_async("ws://localhost/rpc", stream).await?;
+                let (ws, _resp) =
+                    tokio_tungstenite::client_async("ws://localhost/rpc", stream).await?;
                 let (mut w, mut r) = ws.split();
                 w.send(Message::text(
                     json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}).to_string(),
@@ -557,7 +585,8 @@ fn main() -> Result<()> {
             let wait_all = !has_flag(&args, "--no-wait");
             rt().block_on(async move {
                 let stream = tokio::net::UnixStream::connect(&sock).await?;
-                let (ws, _resp) = tokio_tungstenite::client_async("ws://localhost/rpc", stream).await?;
+                let (ws, _resp) =
+                    tokio_tungstenite::client_async("ws://localhost/rpc", stream).await?;
                 let (mut w, mut r) = ws.split();
                 let n = lines.len();
                 let reader = tokio::spawn(async move {
@@ -634,7 +663,11 @@ async fn rpc_call(socket: &PathBuf, method: &str, params: Value) -> Result<Value
         if let Message::Text(t) = m {
             let v: Value = serde_json::from_str(&t)?;
             if let Some(e) = v.get("error") {
-                bail!("{}: {}", e["code"], e["message"].as_str().unwrap_or("error"));
+                bail!(
+                    "{}: {}",
+                    e["code"],
+                    e["message"].as_str().unwrap_or("error")
+                );
             }
             return Ok(v.get("result").cloned().unwrap_or(Value::Null));
         }
@@ -678,7 +711,10 @@ fn socket_path(ws: &Workspace, args: &[String]) -> PathBuf {
 }
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 fn all_values(args: &[String], name: &str) -> Vec<String> {

@@ -25,17 +25,32 @@ pub struct Usage {
 
 impl Usage {
     pub fn total_tokens(&self) -> u64 {
-        self.input_tokens + self.output_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
+        self.input_tokens
+            + self.output_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum AssistantBlock {
-    Text { text: String },
-    Thinking { thinking: String },
-    ToolUse { id: String, name: String, input: Value },
-    ToolResult { tool_use_id: String, content: Value, is_error: bool },
+    Text {
+        text: String,
+    },
+    Thinking {
+        thinking: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: Value,
+        is_error: bool,
+    },
     Other(Value),
 }
 
@@ -94,8 +109,14 @@ fn usage_of(v: &Value) -> Usage {
             .get("cache_creation_input_tokens")
             .and_then(|x| x.as_u64())
             .unwrap_or(0),
-        cache_read_input_tokens: u.get("cache_read_input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-        cost_usd: v.get("total_cost_usd").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        cache_read_input_tokens: u
+            .get("cache_read_input_tokens")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
+        cost_usd: v
+            .get("total_cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0),
         model: v
             .get("modelUsage")
             .and_then(|m| m.as_object())
@@ -103,19 +124,22 @@ fn usage_of(v: &Value) -> Usage {
     };
     // modelUsage 에는 모델별 사용량이 온다. 첫 모델의 토큰을 보조로 쓴다.
     if out.total_tokens() == 0 {
-        if let Some(mu) = v.get("modelUsage").and_then(|m| m.as_object()) {
-            for (name, m) in mu {
-                out.model = Some(name.clone());
-                out.input_tokens = m.get("inputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                out.output_tokens = m.get("outputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                out.cache_creation_input_tokens = m
-                    .get("cacheCreationInputTokens")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0);
-                out.cache_read_input_tokens =
-                    m.get("cacheReadInputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                break;
-            }
+        if let Some((name, m)) = v
+            .get("modelUsage")
+            .and_then(|m| m.as_object())
+            .and_then(|mu| mu.iter().next())
+        {
+            out.model = Some(name.clone());
+            out.input_tokens = m.get("inputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
+            out.output_tokens = m.get("outputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
+            out.cache_creation_input_tokens = m
+                .get("cacheCreationInputTokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
+            out.cache_read_input_tokens = m
+                .get("cacheReadInputTokens")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
         }
     }
     out
@@ -127,25 +151,35 @@ fn blocks_of(content: &Value) -> Vec<AssistantBlock> {
         None => return vec![],
     };
     arr.iter()
-        .map(|b| match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-            "text" => AssistantBlock::Text {
-                text: b.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        .map(
+            |b| match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "text" => AssistantBlock::Text {
+                    text: b
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                },
+                "thinking" => AssistantBlock::Thinking {
+                    thinking: b
+                        .get("thinking")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                },
+                "tool_use" => AssistantBlock::ToolUse {
+                    id: s(b, "id").unwrap_or_default(),
+                    name: s(b, "name").unwrap_or_default(),
+                    input: b.get("input").cloned().unwrap_or(Value::Null),
+                },
+                "tool_result" => AssistantBlock::ToolResult {
+                    tool_use_id: s(b, "tool_use_id").unwrap_or_default(),
+                    content: b.get("content").cloned().unwrap_or(Value::Null),
+                    is_error: b.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
+                },
+                _ => AssistantBlock::Other(b.clone()),
             },
-            "thinking" => AssistantBlock::Thinking {
-                thinking: b.get("thinking").and_then(|t| t.as_str()).unwrap_or("").to_string(),
-            },
-            "tool_use" => AssistantBlock::ToolUse {
-                id: s(b, "id").unwrap_or_default(),
-                name: s(b, "name").unwrap_or_default(),
-                input: b.get("input").cloned().unwrap_or(Value::Null),
-            },
-            "tool_result" => AssistantBlock::ToolResult {
-                tool_use_id: s(b, "tool_use_id").unwrap_or_default(),
-                content: b.get("content").cloned().unwrap_or(Value::Null),
-                is_error: b.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
-            },
-            _ => AssistantBlock::Other(b.clone()),
-        })
+        )
         .collect()
 }
 
@@ -182,7 +216,11 @@ pub fn parse_line(line: &str) -> Option<DriverEvent> {
             let tools = v
                 .get("tools")
                 .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             DriverEvent::Init {
                 session_id: s(&v, "session_id").unwrap_or_default(),
@@ -278,7 +316,12 @@ mod tests {
     fn parses_init() {
         let line = r#"{"type":"system","subtype":"init","session_id":"abc","model":"claude-haiku","mcp_servers":[{"name":"jadecode","status":"connected"}],"tools":["Bash","Read"]}"#;
         match parse_line(line).unwrap() {
-            DriverEvent::Init { session_id, mcp_servers, tools, .. } => {
+            DriverEvent::Init {
+                session_id,
+                mcp_servers,
+                tools,
+                ..
+            } => {
                 assert_eq!(session_id, "abc");
                 assert_eq!(mcp_servers[0].status, "connected");
                 assert!(tools.contains(&"Bash".to_string()));
@@ -303,7 +346,13 @@ mod tests {
     fn parses_result_usage() {
         let line = r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":2,"session_id":"s","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.01}"#;
         match parse_line(line).unwrap() {
-            DriverEvent::Result { is_error, text, usage, num_turns, .. } => {
+            DriverEvent::Result {
+                is_error,
+                text,
+                usage,
+                num_turns,
+                ..
+            } => {
                 assert!(!is_error);
                 assert_eq!(text.as_deref(), Some("ok"));
                 assert_eq!(usage.total_tokens(), 15);
@@ -316,7 +365,10 @@ mod tests {
 
     #[test]
     fn unknown_line_is_other() {
-        assert!(matches!(parse_line(r#"{"type":"weird"}"#).unwrap(), DriverEvent::Other(_)));
+        assert!(matches!(
+            parse_line(r#"{"type":"weird"}"#).unwrap(),
+            DriverEvent::Other(_)
+        ));
         assert!(parse_line("not json").is_none());
     }
 

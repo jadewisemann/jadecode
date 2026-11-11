@@ -100,7 +100,8 @@ impl DriverConfig {
         let settings_file = dir.join("settings.json");
         std::fs::write(&settings_file, serde_json::to_string_pretty(&settings)?)?;
 
-        let mcp = crate::spec::mcp_config("jadecode", &self.mcp_command, &self.mcp_args, &self.mcp_env);
+        let mcp =
+            crate::spec::mcp_config("jadecode", &self.mcp_command, &self.mcp_args, &self.mcp_env);
         let mcp_file = dir.join("mcp.json");
         std::fs::write(&mcp_file, serde_json::to_string_pretty(&mcp)?)?;
 
@@ -432,7 +433,12 @@ impl Driver {
                         }
                     }
                 }
-                DriverEvent::Result { is_error, text, usage, .. } => {
+                DriverEvent::Result {
+                    is_error,
+                    text,
+                    usage,
+                    ..
+                } => {
                     out.is_error = is_error;
                     out.text = text;
                     out.usage = usage;
@@ -457,7 +463,11 @@ mod tests {
 
     fn cfg() -> DriverConfig {
         // 테스트가 병렬로 돌므로 폴더를 매번 따로 만든다.
-        let tmp = std::env::temp_dir().join(format!("jc-drv-{}-{}", std::process::id(), jc_core::ulid::new_id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "jc-drv-{}-{}",
+            std::process::id(),
+            jc_core::ulid::new_id()
+        ));
         std::fs::create_dir_all(&tmp).unwrap();
         let bot_dir = tmp.join("bot");
         std::fs::create_dir_all(&bot_dir).unwrap();
@@ -511,7 +521,10 @@ mod tests {
         c.resume = true;
         let f = c.prepare().unwrap();
         let a = c.args(&f).join(" ");
-        assert!(a.contains("--resume 11111111-2222-3333-4444-555555555555"), "{a}");
+        assert!(
+            a.contains("--resume 11111111-2222-3333-4444-555555555555"),
+            "{a}"
+        );
         assert!(!a.contains("--session-id"));
     }
 

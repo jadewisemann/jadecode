@@ -76,7 +76,7 @@ fn gen(root: &Path, projects: usize, cards: usize, events: usize) -> Result<Valu
     std::fs::create_dir_all(root.join("work"))?;
     std::fs::write(
         root.join("jadecode.toml"),
-        format!("name = \"bench\"\nversion = \"0.1\"\n"),
+        "name = \"bench\"\nversion = \"0.1\"\n",
     )?;
 
     let mut rels: Vec<(usize, String)> = vec![];
@@ -137,7 +137,7 @@ fn gen(root: &Path, projects: usize, cards: usize, events: usize) -> Result<Valu
         });
         f.write_all(line.as_bytes())?;
     }
-    for (_, f) in files.iter_mut() {
+    for f in files.values_mut() {
         f.sync_data().ok();
     }
     let write_ms = t1.elapsed().as_millis();
@@ -245,9 +245,8 @@ async fn subscribe(root: &Path, subscribers: usize, events: usize) -> Result<Val
     let mut per: Vec<u128> = vec![];
     for _ in 0..subscribers {
         let t1 = Instant::now();
-        let mut st = conn.prepare_cached(
-            "SELECT seq, line FROM events WHERE seq > ?1 ORDER BY seq LIMIT 500",
-        )?;
+        let mut st = conn
+            .prepare_cached("SELECT seq, line FROM events WHERE seq > ?1 ORDER BY seq LIMIT 500")?;
         let _rows: Vec<(i64, String)> = st
             .query_map([from as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
             .filter_map(|x| x.ok())
@@ -383,7 +382,14 @@ async fn main() -> Result<()> {
         )?,
         "rebuild" => rebuild(&dir)?,
         "check" => check(&dir)?,
-        "subscribe" => subscribe(&dir, arg(&args, "--subscribers", 8), arg(&args, "--events", 500)).await?,
+        "subscribe" => {
+            subscribe(
+                &dir,
+                arg(&args, "--subscribers", 8),
+                arg(&args, "--events", 500),
+            )
+            .await?
+        }
         "client" => client_cost(&dir, arg(&args, "--iterations", 200))?,
         "all" => {
             let projects = arg(&args, "--projects", 12);
@@ -391,8 +397,16 @@ async fn main() -> Result<()> {
             let events = arg(&args, "--events", 100_000);
             println!("{}", gen(&dir, projects, cards, events)?);
             println!("{}", rebuild(&dir)?);
-            for (batch, fsync) in [(1, Fsync::Batch), (10, Fsync::Batch), (100, Fsync::Batch), (100, Fsync::Off)] {
-                println!("{}", append(&dir, arg(&args, "--append", 20_000), batch, fsync)?);
+            for (batch, fsync) in [
+                (1, Fsync::Batch),
+                (10, Fsync::Batch),
+                (100, Fsync::Batch),
+                (100, Fsync::Off),
+            ] {
+                println!(
+                    "{}",
+                    append(&dir, arg(&args, "--append", 20_000), batch, fsync)?
+                );
             }
             println!("{}", subscribe(&dir, 8, 500).await?);
             println!("{}", client_cost(&dir, 200)?);

@@ -14,7 +14,6 @@ struct Harness {
     ws: Workspace,
     socket: PathBuf,
     client: tokio::task::JoinHandle<()>,
-    shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 async fn setup(path: &[&str]) -> (Harness, Vec<jc_core::workspace::CardEntry>) {
@@ -34,7 +33,7 @@ async fn setup(path: &[&str]) -> (Harness, Vec<jc_core::workspace::CardEntry>) {
     }
     cards.extend(ws.cards().unwrap());
     let socket = dir.join(".jadecode/s.sock");
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
     let ready = tokio::sync::oneshot::channel::<()>();
     let ready_tx = ready.0;
     let root = dir.clone();
@@ -57,7 +56,7 @@ async fn setup(path: &[&str]) -> (Harness, Vec<jc_core::workspace::CardEntry>) {
         let _ = r;
     });
     // 준비를 기다린다(accept 루프 진입은 리스너 바인딩 뒤).
-    let mut ready_rx = ready.1;
+    let ready_rx = ready.1;
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         let _ = ready_rx.await;
     })
@@ -69,14 +68,13 @@ async fn setup(path: &[&str]) -> (Harness, Vec<jc_core::workspace::CardEntry>) {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let _ = rx;
+    drop(rx);
     (
         Harness {
             dir,
             ws,
             socket,
             client,
-            shutdown: tx,
         },
         cards,
     )
@@ -180,8 +178,14 @@ async fn set_status_writes_file_and_emits_event() {
     let (h, cards) = setup(&["refine", "implement"]).await;
     let mut ws = connect(&h.socket).await;
     let id = &cards[0].state.front.id;
-    let r = call(&mut ws, 1, "card.set_status", json!({"card": id, "status": "working"})).await;
-    assert!(r["result"]["seqs"].as_array().unwrap().len() >= 1, "{r}");
+    let r = call(
+        &mut ws,
+        1,
+        "card.set_status",
+        json!({"card": id, "status": "working"}),
+    )
+    .await;
+    assert!(!r["result"]["seqs"].as_array().unwrap().is_empty(), "{r}");
     // 파일이 정본
     let md = std::fs::read_to_string(h.ws.root.join(&cards[0].rel).join("task.md")).unwrap();
     assert!(md.contains("status: working"), "{md}");
@@ -195,7 +199,13 @@ async fn set_status_writes_file_and_emits_event() {
         .unwrap();
     assert_eq!(row["status"], "working");
     // 잘못된 상태는 거절
-    let bad = call(&mut ws, 3, "card.set_status", json!({"card": id, "status": "nope"})).await;
+    let bad = call(
+        &mut ws,
+        3,
+        "card.set_status",
+        json!({"card": id, "status": "nope"}),
+    )
+    .await;
     assert_eq!(bad["error"]["code"], -32602);
     h.client.abort();
 }

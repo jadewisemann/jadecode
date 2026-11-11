@@ -12,14 +12,14 @@
 pub mod acp;
 pub mod agent;
 pub mod any;
-pub mod proc;
 pub mod pi;
+pub mod proc;
 pub mod spec;
 pub mod stream;
 
 pub use acp::{AcpDriver, AcpHost, AcpPermission};
-pub use any::{resolve_bin, AgentDriver, SpawnHooks};
 pub use agent::{AgentKind, Protocol};
+pub use any::{resolve_bin, AgentDriver, SpawnHooks};
 pub use pi::PiDriver;
 pub use proc::{Driver, DriverConfig, DriverState, TurnOutcome};
 pub use spec::{BotSpec, Isolation};

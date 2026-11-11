@@ -13,8 +13,8 @@ use crate::board::{Board, BoardSnapshot, Card as CardData, EventRow};
 use crate::format;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, rgb, size, App, Application, Bounds, Context, MouseButton, Window, WindowBounds,
-    WindowOptions,
+    div, point, px, rgb, size, App, Application, Bounds, Context, MouseButton, Window,
+    WindowBounds, WindowOptions,
 };
 
 const BG: u32 = 0x14161b;
@@ -243,7 +243,13 @@ impl App2 {
             .bg(rgb(PANEL))
             .border_b_1()
             .border_color(rgb(LINE))
-            .child(div().text_lg().text_color(rgb(TEXT)).child("jadecode").mr_4());
+            .child(
+                div()
+                    .text_lg()
+                    .text_color(rgb(TEXT))
+                    .child("jadecode")
+                    .mr_4(),
+            );
         for (v, label) in [
             (View::Board, "보드"),
             (View::Card, "카드"),
@@ -312,7 +318,13 @@ impl App2 {
     fn board_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let project = self.project.clone();
         let stages = self.snap().stages(project.as_deref());
-        let mut cols = div().flex().flex_row().gap_3().p_4().flex_1().overflow_hidden();
+        let mut cols = div()
+            .flex()
+            .flex_row()
+            .gap_3()
+            .p_4()
+            .flex_1()
+            .overflow_hidden();
         if stages.is_empty() {
             return cols
                 .child(
@@ -456,10 +468,7 @@ impl App2 {
         let p1 = card.path.clone();
         let p2 = card.path.clone();
         let p3 = card.path.clone();
-        let proj = self
-            .project
-            .clone()
-            .unwrap_or_else(|| card.project.clone());
+        let proj = self.project.clone().unwrap_or_else(|| card.project.clone());
         body = body.child(
             div()
                 .flex()
@@ -574,7 +583,13 @@ impl App2 {
     }
 
     fn chat_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let mut list = div().flex().flex_col().gap_2().p_4().flex_1().overflow_hidden();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_4()
+            .flex_1()
+            .overflow_hidden();
 
         for p in self.snap().pending_permissions.clone() {
             let seq = p.seq;
@@ -608,10 +623,9 @@ impl App2 {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _w, cx| {
-                                    let _ = this.tx.send(Action::ResolvePermission {
-                                        seq,
-                                        allow: true,
-                                    });
+                                    let _ = this
+                                        .tx
+                                        .send(Action::ResolvePermission { seq, allow: true });
                                     cx.notify();
                                 }),
                             ),
@@ -628,10 +642,9 @@ impl App2 {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _w, cx| {
-                                    let _ = this.tx.send(Action::ResolvePermission {
-                                        seq,
-                                        allow: false,
-                                    });
+                                    let _ = this
+                                        .tx
+                                        .send(Action::ResolvePermission { seq, allow: false });
                                     cx.notify();
                                 }),
                             ),
@@ -731,12 +744,20 @@ impl App2 {
                     .text_color(rgb(TEXT))
                     .child(format!(
                         "{} · {} · {} — {}",
-                        i.id, i.bot, format::agent_label(&i.agent), format::status_label(&i.state)
+                        i.id,
+                        i.bot,
+                        format::agent_label(&i.agent),
+                        format::status_label(&i.state)
                     )),
             );
         }
         if self.snap().instances.is_empty() {
-            rows = rows.child(div().text_sm().text_color(rgb(MUTED)).child("도는 인스턴스가 없다."));
+            rows = rows.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(MUTED))
+                    .child("도는 인스턴스가 없다."),
+            );
         }
         rows.child(
             div()

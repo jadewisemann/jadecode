@@ -289,10 +289,7 @@ impl PiDriver {
     }
 
     pub fn last_text(&self) -> Option<String> {
-        self.last_text
-            .lock()
-            .ok()
-            .and_then(|v| v.last().cloned())
+        self.last_text.lock().ok().and_then(|v| v.last().cloned())
     }
 
     pub async fn terminate(mut self) -> Result<()> {
@@ -309,7 +306,10 @@ impl PiDriver {
                 let _ = self.child.wait().await;
             }
         }
-        for t in [self.reader.take(), self.stderr.take()].into_iter().flatten() {
+        for t in [self.reader.take(), self.stderr.take()]
+            .into_iter()
+            .flatten()
+        {
             t.abort();
         }
         Ok(())
@@ -498,7 +498,10 @@ mod tests {
             &mut buf,
             &last,
         );
-        assert!(matches!(&evs[0], DriverEvent::Result { is_error: true, .. }));
+        assert!(matches!(
+            &evs[0],
+            DriverEvent::Result { is_error: true, .. }
+        ));
     }
 
     #[test]

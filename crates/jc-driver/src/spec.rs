@@ -2,7 +2,7 @@
 //!
 //! 사람만 정하는 값(권한 정책·예산·사람 절차)은 `policy/`에 두고 봇 폴더 밖에 둔다(C1).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -73,7 +73,8 @@ impl BotSpec {
         let p = dir.join("bot.toml");
         let text = std::fs::read_to_string(&p)
             .with_context(|| format!("bot.toml 없음: {}", p.display()))?;
-        let spec: BotSpec = toml::from_str(&text).with_context(|| format!("parse {}", p.display()))?;
+        let spec: BotSpec =
+            toml::from_str(&text).with_context(|| format!("parse {}", p.display()))?;
         // 어떤 에이전트인지는 호출자가 `AgentKind::parse`로 확인한다(넷 다 지원).
         Ok(spec)
     }
@@ -147,12 +148,20 @@ impl PermissionPolicy {
             allow: perms
                 .get("allow")
                 .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             deny: perms
                 .get("deny")
                 .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             default_mode: perms
                 .get("defaultMode")
@@ -169,19 +178,37 @@ impl PermissionPolicy {
                 // 도구 호출마다 권한 RPC가 돌아 턴이 느려지고 사람이 매번 답해야 한다.
                 "mcp__jadecode",
                 "ToolSearch",
-                "Read", "Glob", "Grep", "Edit", "Write", "TodoWrite",
-                "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
-                "Bash(git add:*)", "Bash(git commit:*)", "Bash(ls:*)",
-                "Bash(cat:*)", "Bash(cargo test:*)", "Bash(cargo build:*)",
-                "Bash(cargo run:*)", "Bash(npm test:*)", "Bash(npm run build:*)",
-                "Bash(python3:*)", "Bash(jq:*)", "Bash(mkdir:*)",
+                "Read",
+                "Glob",
+                "Grep",
+                "Edit",
+                "Write",
+                "TodoWrite",
+                "Bash(git status:*)",
+                "Bash(git diff:*)",
+                "Bash(git log:*)",
+                "Bash(git add:*)",
+                "Bash(git commit:*)",
+                "Bash(ls:*)",
+                "Bash(cat:*)",
+                "Bash(cargo test:*)",
+                "Bash(cargo build:*)",
+                "Bash(cargo run:*)",
+                "Bash(npm test:*)",
+                "Bash(npm run build:*)",
+                "Bash(python3:*)",
+                "Bash(jq:*)",
+                "Bash(mkdir:*)",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
             deny: [
-                "Bash(git push:*)", "Bash(curl:*)", "Bash(wget:*)",
-                "Bash(rm -rf:*)", "Bash(sudo:*)",
+                "Bash(git push:*)",
+                "Bash(curl:*)",
+                "Bash(wget:*)",
+                "Bash(rm -rf:*)",
+                "Bash(sudo:*)",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -200,10 +227,24 @@ impl PermissionPolicy {
             allow.push("ToolSearch".into());
         }
         const BUILTIN_SKILLS: &[&str] = &[
-            "update-config", "keybindings-help", "simplify", "fewer-permission-prompts",
-            "loop", "claude-api", "run", "init", "review", "security-review",
-            "statusline-setup", "insights", "output-style-setup", "export",
-            "pr-comments", "todos", "agent-sdk-verifier-ts", "agent-sdk-verifier-py",
+            "update-config",
+            "keybindings-help",
+            "simplify",
+            "fewer-permission-prompts",
+            "loop",
+            "claude-api",
+            "run",
+            "init",
+            "review",
+            "security-review",
+            "statusline-setup",
+            "insights",
+            "output-style-setup",
+            "export",
+            "pr-comments",
+            "todos",
+            "agent-sdk-verifier-ts",
+            "agent-sdk-verifier-py",
             "code-review",
         ];
         let mut deny = self.deny.clone();
@@ -222,7 +263,12 @@ impl PermissionPolicy {
 }
 
 /// MCP 서버 설정(`--mcp-config`) — jadecode MCP 서버 하나.
-pub fn mcp_config(server_name: &str, command: &str, args: &[String], env: &BTreeMap<String, String>) -> serde_json::Value {
+pub fn mcp_config(
+    server_name: &str,
+    command: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+) -> serde_json::Value {
     serde_json::json!({
         "mcpServers": {
             server_name: {
@@ -244,8 +290,12 @@ mod tests {
         let p = PermissionPolicy::default_policy();
         let j = p.to_settings_json(&[]);
         let deny = j["permissions"]["deny"].as_array().unwrap();
-        assert!(deny.iter().any(|x| x.as_str().unwrap().contains("git push")));
-        assert!(deny.iter().any(|x| x.as_str().unwrap().starts_with("Skill(")));
+        assert!(deny
+            .iter()
+            .any(|x| x.as_str().unwrap().contains("git push")));
+        assert!(deny
+            .iter()
+            .any(|x| x.as_str().unwrap().starts_with("Skill(")));
         assert_eq!(j["attribution"]["commit"], "");
     }
 
@@ -271,7 +321,11 @@ pub fn isolation_mcp_servers(
         "--socket".to_string(),
         socket.display().to_string(),
         "--role".to_string(),
-        if card.is_none() { "orchestrator".to_string() } else { "worker".to_string() },
+        if card.is_none() {
+            "orchestrator".to_string()
+        } else {
+            "worker".to_string()
+        },
         "--instance".to_string(),
         instance.to_string(),
         "--project".to_string(),

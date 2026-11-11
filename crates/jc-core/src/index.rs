@@ -79,8 +79,8 @@ pub fn remove_index(root: &Path) {
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
     pub journals: Vec<String>,
-    pub cards: Vec<String>,     // "work/<p>/<c>"
-    pub projects: Vec<String>,  // "work/<p>"
+    pub cards: Vec<String>,    // "work/<p>/<c>"
+    pub projects: Vec<String>, // "work/<p>"
 }
 
 /// 디렉터리를 훑어 일지·카드를 찾는다. 비재귀(워크트리 안은 보지 않는다).
@@ -100,7 +100,11 @@ pub fn scan_layout(root: &Path) -> Result<Layout> {
         .collect();
     dirs.sort();
     for p in dirs {
-        let pname = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let pname = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         if pname.starts_with('.') {
             continue;
         }
@@ -122,7 +126,11 @@ pub fn scan_layout(root: &Path) -> Result<Layout> {
             .collect();
         cdirs.sort();
         for c in cdirs {
-            let cname = c.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let cname = c
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if cname.starts_with('.') {
                 continue;
             }
@@ -166,7 +174,11 @@ pub fn seq_heads(conn: &Connection, from: u64, to: u64) -> Result<HashMap<u64, (
     let mut s = conn.prepare("SELECT seq, topic, kind FROM events WHERE seq BETWEEN ?1 AND ?2")?;
     let mut out = HashMap::new();
     for r in s.query_map([from as i64, to as i64], |r| {
-        Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, i64>(0)? as u64,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })? {
         let (s, t, k) = r?;
         out.insert(s, (t, k));

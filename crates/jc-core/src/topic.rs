@@ -93,9 +93,15 @@ mod tests {
             journal_for_topic("project/p1/card/01ABC/instance/i1").unwrap(),
             "work/p1/01ABC/events.jsonl"
         );
-        assert_eq!(journal_for_topic("project/p1").unwrap(), "work/p1/events.jsonl");
+        assert_eq!(
+            journal_for_topic("project/p1").unwrap(),
+            "work/p1/events.jsonl"
+        );
         assert_eq!(journal_for_topic("global").unwrap(), "events/global.jsonl");
-        assert_eq!(journal_for_topic("instance/i1").unwrap(), "events/global.jsonl");
+        assert_eq!(
+            journal_for_topic("instance/i1").unwrap(),
+            "events/global.jsonl"
+        );
         assert!(journal_for_topic("project/../x").is_err());
         assert!(journal_for_topic("project//card/c").is_err());
     }
@@ -114,7 +120,10 @@ mod tests {
     fn sql_uses_glob_and_escapes() {
         let (cond, args) = topic_sql(&["project/p1".into()], 1);
         assert!(cond.contains("topic GLOB"), "{cond}");
-        assert_eq!(args, vec!["project/p1".to_string(), "project/p1/*".to_string()]);
+        assert_eq!(
+            args,
+            vec!["project/p1".to_string(), "project/p1/*".to_string()]
+        );
         let (_c, args) = topic_sql(&["weird*name".into()], 1);
         assert_eq!(args[1], "weird[*]name/*");
     }

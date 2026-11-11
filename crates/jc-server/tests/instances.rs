@@ -18,12 +18,7 @@ fn dud_bin() -> String {
     }
 }
 
-async fn setup() -> (
-    PathBuf,
-    PathBuf,
-    tokio::task::JoinHandle<()>,
-    String,
-) {
+async fn setup() -> (PathBuf, PathBuf, tokio::task::JoinHandle<()>, String) {
     // macOS 유닉스 소켓 경로 한도(104) 때문에 짧은 경로를 쓴다.
     let dir = jc_core::short_temp_root("jci");
     let (mut ws, _) = Workspace::init(&dir, "test").unwrap();
@@ -103,7 +98,7 @@ async fn call(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bots_list_shows_four_default_bots() {
-    let (_d, socket, t, card) = setup().await;
+    let (_d, socket, t, _card) = setup().await;
     let mut ws = connect(&socket).await;
     let r = call(&mut ws, 1, "bots.list", json!({})).await;
     let names: Vec<String> = r["result"]["bots"]
@@ -120,19 +115,21 @@ async fn bots_list_shows_four_default_bots() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_get_exposes_human_values() {
-    let (_d, socket, t, card) = setup().await;
+    let (_d, socket, t, _card) = setup().await;
     let mut ws = connect(&socket).await;
     let r = call(&mut ws, 1, "policy.get", json!({})).await;
     assert_eq!(r["result"]["policy"]["permission_timeout_min"], 25);
     assert_eq!(r["result"]["defaults"]["permission_timeout_min"], 25);
-    let procs = r["result"]["defaults"]["human_procedures"].as_array().unwrap();
+    let procs = r["result"]["defaults"]["human_procedures"]
+        .as_array()
+        .unwrap();
     assert!(procs.iter().any(|p| p == "merge_protected_branch"));
     t.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn card_add_through_rpc_is_indexed() {
-    let (_d, socket, t, card) = setup().await;
+    let (_d, socket, t, _card) = setup().await;
     let mut ws = connect(&socket).await;
     let r = call(
         &mut ws,
@@ -153,7 +150,13 @@ async fn card_add_through_rpc_is_indexed() {
         .collect();
     assert!(titles.contains(&"via rpc".to_string()), "{titles:?}");
     // 일지에도 사건이 남는다
-    let tail = call(&mut ws, 3, "events.tail", json!({"topics":["project/p1/card"],"limit":20})).await;
+    let tail = call(
+        &mut ws,
+        3,
+        "events.tail",
+        json!({"topics":["project/p1/card"],"limit":20}),
+    )
+    .await;
     let kinds: Vec<String> = tail["result"]["events"]
         .as_array()
         .unwrap()
@@ -166,7 +169,7 @@ async fn card_add_through_rpc_is_indexed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn project_add_is_idempotent_guard() {
-    let (_d, socket, t, card) = setup().await;
+    let (_d, socket, t, _card) = setup().await;
     let mut ws = connect(&socket).await;
     let r = call(&mut ws, 1, "project.add", json!({"name":"New Proj"})).await;
     assert_eq!(r["result"]["slug"], "new-proj");
@@ -204,7 +207,7 @@ async fn instances_list_empty_and_start_reports_error() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn permission_request_denies_when_no_instance() {
-    let (_d, socket, t, card) = setup().await;
+    let (_d, socket, t, _card) = setup().await;
     let mut ws = connect(&socket).await;
     let r = call(
         &mut ws,
@@ -220,7 +223,7 @@ async fn permission_request_denies_when_no_instance() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn permission_resolve_unknown_seq_is_refused() {
-    let (_d, socket, t, card) = setup().await;
+    let (_d, socket, t, _card) = setup().await;
     let mut ws = connect(&socket).await;
     let r = call(
         &mut ws,
@@ -248,17 +251,20 @@ async fn instance_start_with_dead_claude_fails_cleanly() {
     // 시작 자체는 받아들인다(프로세스는 떴다). 실패는 이벤트로 드러난다.
     assert!(r.get("result").is_some(), "{r}");
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let tail = call(&mut ws, 2, "events.tail", json!({"topics":["project/p1/card"],"limit":30})).await;
+    let tail = call(
+        &mut ws,
+        2,
+        "events.tail",
+        json!({"topics":["project/p1/card"],"limit":30}),
+    )
+    .await;
     let kinds: Vec<String> = tail["result"]["events"]
         .as_array()
         .unwrap()
         .iter()
         .map(|e| e["kind"].as_str().unwrap().to_string())
         .collect();
-    assert!(
-        kinds.iter().any(|k| k == "instance.started"),
-        "{kinds:?}"
-    );
+    assert!(kinds.iter().any(|k| k == "instance.started"), "{kinds:?}");
     t.abort();
 }
 
@@ -268,11 +274,21 @@ async fn many_workspaces_do_not_collide() {
     let a = jc_core::short_temp_root("jcq");
     let b = jc_core::short_temp_root("jcq");
     assert_ne!(a, b);
-    let (mut wa, _) = Workspace::init(&a, "a").unwrap();
-    let (mut wb, _) = Workspace::init(&b, "b").unwrap();
+    let (wa, _) = Workspace::init(&a, "a").unwrap();
+    let (wb, _) = Workspace::init(&b, "b").unwrap();
     // 둘 다 동시에 쓸 수 있어야 한다.
     let mut sa = wa.store().unwrap();
     let mut sb = wb.store().unwrap();
-    sa.append(vec![jc_core::NewEvent::new("global", "x", serde_json::json!({}))]).unwrap();
-    sb.append(vec![jc_core::NewEvent::new("global", "y", serde_json::json!({}))]).unwrap();
+    sa.append(vec![jc_core::NewEvent::new(
+        "global",
+        "x",
+        serde_json::json!({}),
+    )])
+    .unwrap();
+    sb.append(vec![jc_core::NewEvent::new(
+        "global",
+        "y",
+        serde_json::json!({}),
+    )])
+    .unwrap();
 }

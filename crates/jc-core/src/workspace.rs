@@ -104,7 +104,13 @@ impl Workspace {
     pub fn add_project(&mut self, name: &str, repo: Option<&str>) -> Result<PathBuf> {
         let slug: String = name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
             .collect::<String>()
             .split('-')
             .filter(|s| !s.is_empty())
@@ -125,7 +131,10 @@ impl Workspace {
         };
         std::fs::write(
             abs.join("project.toml"),
-            format!("# jadecode 프로젝트\nname = \"{}\"\nslug = \"{slug}\"\n{repos}", name.replace('"', "'")),
+            format!(
+                "# jadecode 프로젝트\nname = \"{}\"\nslug = \"{slug}\"\n{repos}",
+                name.replace('"', "'")
+            ),
         )?;
         let mut store = self.store()?;
         store.append(vec![NewEvent::new(
@@ -274,7 +283,12 @@ pub fn short_temp_root(prefix: &str) -> PathBuf {
     let n = N.fetch_add(1, Ordering::Relaxed);
     // 이름이 겹치면(이전 실행이 남긴 폴더) 안에 든 잠금 때문에 실패한다.
     // ULID를 붙여 겹치지 않게 하고, 그래도 있으면 지우고 새로 만든다.
-    let short = format!("/tmp/{prefix}{}-{}-{}", std::process::id(), n, crate::ulid::new_id()[20..].to_lowercase());
+    let short = format!(
+        "/tmp/{prefix}{}-{}-{}",
+        std::process::id(),
+        n,
+        crate::ulid::new_id()[20..].to_lowercase()
+    );
     let p = PathBuf::from(&short);
     if p.exists() {
         let _ = std::fs::remove_dir_all(&p);

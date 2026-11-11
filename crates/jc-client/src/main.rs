@@ -22,7 +22,9 @@ fn main() -> anyhow::Result<()> {
     if dump {
         // 창을 못 여는 환경(CI·헤드리스)에서 데이터 계층만 확인한다.
         let conn = jc_client::Connection::discover(ws.as_deref())?;
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
         let mut board = rt.block_on(conn.open())?;
         rt.block_on(board.refresh())?;
         println!("{}", serde_json::to_string_pretty(board.snapshot())?);
