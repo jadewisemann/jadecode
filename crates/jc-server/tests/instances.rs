@@ -9,6 +9,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
+/// 즉시 종료하는 더미 실행 파일(리눅스·macOS 공통). `/bin/false`는 macOS에 없다.
+fn dud_bin() -> String {
+    if cfg!(target_os = "macos") {
+        "/usr/bin/true".to_string()
+    } else {
+        "/bin/true".to_string()
+    }
+}
+
 async fn setup() -> (
     PathBuf,
     PathBuf,
@@ -35,8 +44,9 @@ async fn setup() -> (
         watch: true,
         debounce: Duration::from_millis(20),
         mcp_socket: socket.clone(),
-        // 실제 claude를 띄우지 않도록 없는 바이너리를 준다(인스턴스 시작은 실패해야 한다).
-        claude_bin: Some("/bin/false".into()),
+        // 실제 claude를 띄우지 않도록 "아무것도 안 하는" 바이너리를 준다.
+        // `/bin/false`는 macOS에 없으므로 이식 가능한 쪽을 쓴다.
+        claude_bin: Some(dud_bin()),
         ..Default::default()
     };
     let t = tokio::spawn(async move {
@@ -225,7 +235,7 @@ async fn permission_resolve_unknown_seq_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn instance_start_with_dead_claude_fails_cleanly() {
-    // claude 바이너리가 /bin/false면 spawn은 되지만 init이 오지 않는다(정상: 이벤트로 남는다).
+    // claude 바이너리가 더미면 spawn은 되지만 init이 오지 않는다(정상: 이벤트로 남는다).
     let (_d, socket, t, card) = setup().await;
     let mut ws = connect(&socket).await;
     let r = call(

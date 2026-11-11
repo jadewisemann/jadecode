@@ -7,6 +7,7 @@ use jc_driver::proc::{Driver, DriverConfig};
 use jc_driver::spec::{BotSpec, PermissionPolicy};
 use jc_driver::stream::{AssistantBlock, DriverEvent};
 use std::collections::BTreeMap;
+use jc_driver::proc::dud_cmd;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -41,7 +42,7 @@ fn setup(name: &str) -> (PathBuf, DriverConfig) {
         bot_dir: bot,
         bot: spec,
         policy: PermissionPolicy::default_policy(),
-        mcp_command: "/bin/false".into(),
+        mcp_command: dud_cmd(),
         mcp_args: vec![],
         mcp_env: BTreeMap::new(),
         add_dirs: vec![],
@@ -245,7 +246,7 @@ async fn live_user_settings_are_isolated() {
         DriverEvent::Init { mcp_servers, .. } => Some(mcp_servers.clone()),
         _ => None,
     });
-    // --strict-mcp-config + mcp.json(/bin/false)이면 사용자 커넥터 MCP는 보이지 않는다.
+    // --strict-mcp-config + mcp.json(더미 명령)이면 사용자 커넥터 MCP는 보이지 않는다.
     let names: Vec<String> = init.unwrap_or_default().into_iter().map(|m| m.name).collect();
     assert!(
         !names.iter().any(|n| n.contains("claude_ai") || n.contains("connector")),

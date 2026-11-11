@@ -11,6 +11,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
+/// 테스트용 "아무것도 안 하는" 명령. macOS에는 `/bin/false`가 없다.
+pub fn dud_cmd() -> String {
+    if cfg!(target_os = "macos") {
+        "/usr/bin/true".to_string()
+    } else {
+        "/bin/true".to_string()
+    }
+}
+
 /// 부모 세션의 환경을 물려주지 않는다(S1·S4). 이 목록만 넘긴다.
 pub const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "USER", "SHELL", "TERM", "TMPDIR"];
 
@@ -461,7 +470,7 @@ mod tests {
             bot_dir,
             bot,
             policy: PermissionPolicy::default_policy(),
-            mcp_command: "/bin/false".into(),
+            mcp_command: dud_cmd(),
             mcp_args: vec![],
             mcp_env: BTreeMap::new(),
             add_dirs: vec![],
