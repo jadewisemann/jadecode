@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>jadecode 클라이언트 미리보기</title>
+<style>
+  :root{
+    --bg:#14161b; --panel:#1c1f26; --panel2:#232732; --line:#2e3440;
+    --text:#e6e8ee; --muted:#8b93a7; --blue:#4c8dff; --green:#53c08a;
+    --amber:#e0a44b; --red:#e05c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#0b0c10;color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+    padding:24px}
+  h1{font-size:15px;font-weight:600;color:var(--muted);margin:0 0 4px}
+  p.note{font-size:12px;color:var(--muted);margin:0 0 18px;line-height:1.6}
+  .shots{display:flex;flex-direction:column;gap:22px;max-width:1320px}
+  .win{background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden;
+    box-shadow:0 10px 40px rgba(0,0,0,.45)}
+  .titlebar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel);
+    border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+  .dots{display:flex;gap:5px}.dots i{width:9px;height:9px;border-radius:50%;display:block;
+    background:#3a4050}
+  .nav{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--panel);
+    border-bottom:1px solid var(--line)}
+  .brand{font-size:14px;font-weight:600;margin-right:12px}
+  .tab{padding:4px 11px;border-radius:6px;font-size:12.5px;color:var(--muted);background:var(--panel)}
+  .tab.on{background:var(--panel2);color:var(--text)}
+  .spacer{flex:1}
+  .pill{padding:4px 9px;border-radius:6px;font-size:11.5px;background:var(--panel2);color:var(--muted)}
+  .pill.on{background:var(--blue);color:#fff}
+  .seq{font-size:11.5px;color:var(--muted);margin-left:10px}
+  .board{display:flex;gap:12px;padding:16px;overflow:hidden}
+  .col{width:262px;background:var(--panel);border-radius:10px;padding:9px;display:flex;
+    flex-direction:column;gap:8px}
+  .colhead{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);
+    padding:0 4px}
+  .card{background:var(--panel2);border-radius:7px;padding:9px 10px;border-left:2px solid var(--muted);
+    display:flex;flex-direction:column;gap:5px}
+  .card.working{border-left-color:var(--blue)}
+  .card.blocked{border-left-color:var(--red)}
+  .card.waiting_human{border-left-color:var(--amber)}
+  .card.done{border-left-color:var(--green)}
+  .badge{font-size:11.5px;display:flex;gap:5px;align-items:center}
+  .badge.working{color:var(--blue)}.badge.blocked{color:var(--red)}
+  .badge.waiting_human{color:var(--amber)}.badge.done{color:var(--green)}
+  .badge.idle{color:var(--muted)}
+  .ctitle{font-size:13px}
+  .cmeta{font-size:10.5px;color:var(--muted)}
+  .inst{font-size:10.5px;color:var(--muted);background:#1a1e27;border-radius:4px;padding:3px 6px}
+  .path{display:flex;align-items:center;gap:8px;padding:14px 16px 0}
+  .step{padding:4px 10px;border-radius:6px;font-size:12px;background:var(--panel2);color:var(--muted)}
+  .step.on{background:var(--blue);color:#fff}
+  .arrow{color:var(--line)}
+  .btns{display:flex;gap:8px;padding:12px 16px}
+  .btn{font-size:12.5px;padding:6px 13px;border-radius:6px;background:var(--panel2);color:var(--text)}
+  .btn.primary{background:var(--blue);color:#fff}
+  .btn.ok{background:var(--green);color:#08130d}
+  .btn.no{background:var(--red);color:#1a0808}
+  .chat{display:flex;flex-direction:column;gap:8px;padding:14px 16px}
+  .msg{background:var(--panel);border-radius:7px;padding:9px 11px;display:flex;flex-direction:column;gap:4px}
+  .mhead{font-size:10.5px}
+  .mtext{font-size:12.5px;line-height:1.5}
+  .perm{display:flex;align-items:center;gap:10px;background:var(--panel2);border-left:2px solid var(--amber);
+    border-radius:7px;padding:9px 11px;font-size:12.5px}
+  .perm .t{flex:1}
+  .inputrow{display:flex;align-items:center;gap:10px;background:var(--panel2);border-radius:7px;
+    padding:10px 11px;font-size:12.5px;color:var(--muted)}
+  .md{background:var(--panel);border-radius:7px;margin:0 16px 16px;padding:12px 14px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.6;
+    white-space:pre-wrap;color:#c8cddb}
+  .foot{padding:6px 16px;font-size:11px;color:var(--muted)}
+  .label{font-size:12px;color:#6f7891;margin:0 0 8px 2px;letter-spacing:.02em}
+</style>
+</head>
+<body>
+<h1>jadecode 클라이언트 — 화면 미리보기</h1>
+<p class="note">
+  <code>crates/jc-client</code> (Rust + GPUI)의 네 화면을 같은 색·배치로 그린 정적 미리보기입니다.
+  실제 창은 <code>jadecode-client</code>로 뜨고, 데이터는 서버의 이벤트 구독에서 옵니다.
+  (이 컨테이너에는 GPU가 없어 GPUI 렌더를 캡처할 수 없습니다.)
+</p>
+
+<div class="shots">
+
+  <!-- 1. 보드 -->
+  <div>
+    <p class="label">1 · 보드 (프로젝트별 칸반 / 전체 칸반)</p>
+    <div class="win">
+      <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span>jadecode</div>
+      <div class="nav">
+        <span class="brand">jadecode</span>
+        <span class="tab on">보드</span><span class="tab">카드</span>
+        <span class="tab">대화</span><span class="tab">봇</span>
+        <span class="spacer"></span>
+        <span class="pill">전체</span><span class="pill on">api</span>
+        <span class="seq">seq 429</span>
+      </div>
+      <div class="board">
+        <div class="col">
+          <div class="colhead"><span>구현</span><span>5</span></div>
+          <div class="card waiting_human">
+            <div class="badge waiting_human">◐ 사람 대기</div>
+            <div class="ctitle">omp worker smoke</div>
+            <div class="inst">omp 대기 · 4턴</div>
+            <div class="cmeta">01M74H8FG2 · api</div>
+          </div>
+          <div class="card waiting_human">
+            <div class="badge waiting_human">◐ 사람 대기</div>
+            <div class="ctitle">opencode worker smoke</div>
+            <div class="inst">OpenCode 대기 · 5턴</div>
+            <div class="cmeta">01M74HA111 · api</div>
+          </div>
+          <div class="card waiting_human">
+            <div class="badge waiting_human">◐ 사람 대기</div>
+            <div class="ctitle">pi report fix</div>
+            <div class="inst">pi 대기 · 5턴</div>
+            <div class="cmeta">01M74HPBYA · api</div>
+          </div>
+          <div class="card idle">
+            <div class="badge idle">○ 대기</div>
+            <div class="ctitle">pi with key</div>
+            <div class="cmeta">01M74HEY3X · api</div>
+          </div>
+        </div>
+        <div class="col">
+          <div class="colhead"><span>검증</span><span>0</span></div>
+          <div class="cmeta" style="padding:8px 4px;font-size:11px">카드 없음</div>
+        </div>
+        <div class="col">
+          <div class="colhead"><span>보고</span><span>0</span></div>
+          <div class="cmeta" style="padding:8px 4px;font-size:11px">카드 없음</div>
+        </div>
+      </div>
+      <div class="foot">카드를 누르면 상세로 · 단계 열은 프로젝트 단계 목록을 따른다</div>
+    </div>
+  </div>
+
+  <!-- 2. 카드 상세 -->
+  <div>
+    <p class="label">2 · 카드 상세 (경로 진행 · 인스턴스 · 메시지 · task.md)</p>
+    <div class="win">
+      <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span>jadecode — omp worker smoke</div>
+      <div class="nav">
+        <span class="brand">jadecode</span>
+        <span class="tab">보드</span><span class="tab on">카드</span>
+        <span class="tab">대화</span><span class="tab">봇</span>
+        <span class="spacer"></span>
+        <span class="pill on">api</span><span class="seq">seq 429</span>
+      </div>
+      <div class="path">
+        <span class="step">1. 구체화</span><span class="arrow">›</span>
+        <span class="step on">2. 구현</span><span class="arrow">›</span>
+        <span class="step">3. 검증</span><span class="arrow">›</span>
+        <span class="step">4. PR</span><span class="arrow">›</span>
+        <span class="step">5. 보고</span>
+      </div>
+      <div class="btns">
+        <span class="btn primary">다음 단계</span>
+        <span class="btn">워커 띄우기</span>
+        <span class="btn">task.md 읽기</span>
+      </div>
+      <div class="chat">
+        <div class="msg"><div class="mhead" style="color:var(--green)">보고(완료) · w-01m74h8g</div>
+          <div class="mtext">note.txt 생성 완료. 내용 <code>hello from jadecode worker</code> 한 줄.</div></div>
+        <div class="msg"><div class="mhead" style="color:var(--muted)">출력 · w-01m74h8g</div>
+          <div class="mtext">파일을 만들고 내용을 확인했습니다.</div></div>
+      </div>
+      <div class="md">---
+jadecode:
+  id: 01M74H8FG2ATHE8D4WY9AX8WPG
+  title: omp worker smoke
+  project: api
+  path:
+  - implement
+  stage: implement
+  status: waiting_human
+---
+
+## 목표
+
+<code>note.txt</code> 파일을 만든다. 내용은 정확히
+<code>hello from jadecode worker</code> 한 줄.
+
+## 완료 조건
+
+- note.txt가 존재하고 내용이 정확하다.
+- report(status=done)으로 보고한다.</div>
+    </div>
+  </div>
+
+  <!-- 3. 대화 -->
+  <div>
+    <p class="label">3 · 오케스트레이터 대화 (권한 승인 포함)</p>
+    <div class="win">
+      <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span>jadecode — 대화</div>
+      <div class="nav">
+        <span class="brand">jadecode</span>
+        <span class="tab">보드</span><span class="tab">카드</span>
+        <span class="tab on">대화</span><span class="tab">봇</span>
+        <span class="spacer"></span>
+        <span class="pill on">api</span><span class="seq">seq 429</span>
+      </div>
+      <div class="chat">
+        <div class="perm">
+          <span class="t">#32 Bash: <code>chmod +x du.sh &amp;&amp; bash -n du.sh</code></span>
+          <span class="btn ok">승인</span><span class="btn no">거절</span>
+        </div>
+        <div class="msg"><div class="mhead" style="color:var(--amber)">질문 · w-01m74h9k</div>
+          <div class="mtext">du.sh에서 1MB 기준을 KB로 할까요, MB로 할까요?</div></div>
+        <div class="msg"><div class="mhead" style="color:var(--amber)">답 · o-01m74d7x</div>
+          <div class="mtext">KB(1024) 기준으로 하고 출력은 사람이 읽기 좋게 해라.</div></div>
+        <div class="msg"><div class="mhead" style="color:var(--green)">보고(완료) · w-01m74h9k</div>
+          <div class="mtext">du.sh 작성 완료. 실행 권한·문법 검사·임시 픽스처 출력 확인.</div></div>
+        <div class="msg"><div class="mhead" style="color:var(--muted)">확인 · o-01m74d7x</div>
+          <div class="mtext">ack upto=427</div></div>
+        <div class="inputrow">
+          <span style="flex:1">오케스트레이터에게 말하기</span>
+          <span class="btn primary">보내기</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. 봇 -->
+  <div>
+    <p class="label">4 · 봇 · 인스턴스 (백엔드 표시)</p>
+    <div class="win">
+      <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span>jadecode — 봇</div>
+      <div class="nav">
+        <span class="brand">jadecode</span>
+        <span class="tab">보드</span><span class="tab">카드</span>
+        <span class="tab">대화</span><span class="tab on">봇</span>
+        <span class="spacer"></span>
+        <span class="pill on">api</span><span class="seq">seq 429</span>
+      </div>
+      <div class="chat">
+        <div style="font-size:11px;color:var(--muted)">봇 정의는 <code>bots/&lt;name&gt;/bot.toml</code>. <code>agent</code> 칸이 백엔드를 고른다(claude·opencode·omp·pi).</div>
+        <div class="msg"><div class="mtext">w-01m74h8g · worker · <b>omp</b> — 대기</div></div>
+        <div class="msg"><div class="mtext">w-01m74ha2 · worker · <b>OpenCode</b> — 대기</div></div>
+        <div class="msg"><div class="mtext">w-01m74hpby · worker · <b>pi</b> — 대기</div></div>
+        <div class="msg"><div class="mtext">w-01m74hche4 · worker · <b>pi</b> — 대기</div></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">
+          터미널: jadecode bot list · jadecode agents · jadecode instance list
+        </div>
+      </div>
+      <div class="foot">
+        claude 2.1.322 · opencode 2.1.1 · omp 18.12.2 · pi 0.73.1 — 네 백엔드 모두 실측 통과
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
