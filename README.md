@@ -14,11 +14,21 @@
 # 아카이브 받기: github.com/jadewisemann/jadecode/releases
 tar -xzf jadecode-*-<플랫폼>.tar.gz
 cd jadecode-*-<플랫폼>
-./install.sh            # ~/.local/bin 에 설치
+./install.sh            # ~/.local/bin 에 설치 (macOS 는 /Applications/jadecode.app 도)
 ```
 
 지원: `linux-x86_64`, `macos-aarch64`. 체크섬(`.sha256`)이 함께 올라간다.
 릴리즈는 태그(`v*`)나 Actions의 `Release` 수동 실행으로 만든다(Draft로 열린다).
+
+macOS 아카이브에는 `jadecode.app` 번들이 들어 있다(Dock 아이콘·앱 이름).
+서명·공증은 아직 하지 않으므로 첫 실행은 우클릭 → 열기로 연다.
+번들만 직접 만들려면:
+
+```sh
+cargo build --release -p jc-client --features ui --bins
+./tools/make-app.sh                       # dist/jadecode.app
+./tools/make-app.sh --check dist/jadecode.app
+```
 
 ## 빠르게
 

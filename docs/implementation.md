@@ -119,6 +119,55 @@
 - CI에서 고친 것: macOS 유닉스 소켓 경로 한도, 테스트 임시 경로 충돌, `/bin/false` 이식성,
   `jc-bench`→`jc-client`(GPUI) 의존으로 인한 링크 실패, `macos-14` 라벨 미지원 → `macos-latest`.
 
+## macOS 앱 번들 (.app)
+
+`tools/make-app.sh`가 `jadecode-client` 바이너리로 `jadecode.app`을 만든다.
+`release.yml`의 macOS 잡과 `tools/package.sh`(Darwin에서만)가 같은 스크립트를 부른다.
+
+```
+jadecode.app/Contents/
+  Info.plist            CFBundleName/DisplayName=jadecode, id=dev.jadewisemann.jadecode,
+                        CFBundleExecutable=jadecode-client, CFBundlePackageType=APPL,
+                        CFBundleShortVersionString=태그의 숫자 부분, LSMinimumSystemVersion=14.0
+  MacOS/jadecode-client 실행 권한 있는 바이너리
+  Resources/            아이콘 자리. assets/jadecode.icns 가 있으면 자동으로 넣는다.
+```
+
+- **아카이브는 tar.gz 하나로 유지한다.** `.app`은 디렉터리지만 tar는 실행 권한·심볼릭 링크·
+  번들 구조를 그대로 보존하고, 이름 규칙(`jadecode-<tag>-macos-aarch64.tar.gz`)도 안 깨진다.
+  zip을 따로 내면 사용자가 두 파일을 받아야 하고 체크섬·설치 스크립트도 둘로 늘어난다.
+  `install.sh`가 아카이브 안의 `.app`을 `/Applications`로 복사한다(쓸 수 없으면 안내만).
+- **`--check` 모드**: 맥이 없어도 번들 구조·실행 권한·`Info.plist`(python3 `plistlib`)를 검사한다.
+  CI의 macOS 클라이언트 잡이 빌드 직후 이 검사를 돌린다.
+- **버전**: 태그 `v0.1.0-alpha` → `CFBundleShortVersionString` `0.1.0`. Apple은 숫자·점만 받으므로
+  `-alpha` 같은 꼬리는 버린다(원래 값이 다르면 로그에 남긴다).
+- 이 환경(리눅스 aarch64)에서 확인한 것: `bash -n` 두 스크립트, plist 파싱, 구조 검사,
+  GPUI 바이너리가 없을 때 안내 후 종료(코드 3). 맥 실기 실행은 CI에서만 확인된다.
+
+### 서명·공증 (자리만 있음)
+
+지금은 서명하지 않으므로 Gatekeeper 경고가 뜬다(첫 실행: 우클릭 → 열기).
+실제 배포에는 Apple Developer Program 인증서가 필요하다. 스크립트는 환경변수가 있을 때만 서명한다.
+
+```sh
+# 1. 인증서를 키체인에 넣고 이름 확인
+security find-identity -v -p codesigning
+
+# 2. 서명 (make-app.sh 안에서 codesign --deep --force --options runtime --timestamp)
+CODESIGN_IDENTITY="Developer ID Application: 이름 (TEAMID)" tools/make-app.sh
+
+# 3. 공증 자격을 한 번만 키체인에 저장 (앱 암호 = appleid.apple.com 에서 발급)
+xcrun notarytool store-credentials jadecode \
+  --apple-id <id> --team-id <TEAMID> --password <앱 암호>
+
+# 4. 공증 + 스테이플 (스크립트가 ditto 로 zip 을 만들어 submit --wait, stapler staple)
+NOTARY_PROFILE=jadecode CODESIGN_IDENTITY="Developer ID Application: 이름 (TEAMID)" tools/make-app.sh
+```
+
+CI에서는 `CODESIGN_IDENTITY`·`NOTARY_PROFILE` 저장소 비밀로 같은 일을 한다. 인증서(`.p12`)를
+러너 키체인에 넣는 단계는 아직 없다. **남은 일: 인증서·앱 암호 발급, 릴리즈 워크플로에
+키체인 가져오기 단계 추가, 실제 공증 통과 확인.**
+
 ## macOS에서 발견한 것 (CI 첫 실행)
 
 - **유닉스 소켓 경로 길이**: macOS는 `sun_path[104]`라 경로가 104바이트를 넘으면 `bind`가 실패한다.
