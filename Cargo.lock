@@ -360,12 +360,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "jc-driver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jc-core",
+ "libc",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "jc-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "jc-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "jc-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
  "jc-core",
+ "jc-driver",
  "notify",
  "rusqlite",
  "serde",

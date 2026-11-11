@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/jc-core", "crates/jc-server", "crates/jadecode-cli"]
+members = ["crates/jc-core", "crates/jc-driver", "crates/jc-mcp", "crates/jc-server", "crates/jadecode-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +23,8 @@ tokio-tungstenite = "0.30"
 futures-util = "0.3"
 jc-core = { path = "crates/jc-core" }
 jc-server = { path = "crates/jc-server" }
+jc-driver = { path = "crates/jc-driver" }
+jc-mcp = { path = "crates/jc-mcp" }
 
 [profile.release]
 debug = 1

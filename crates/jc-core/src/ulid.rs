@@ -47,6 +47,23 @@ pub fn is_ulid(s: &str) -> bool {
         && s.as_bytes()[0].to_ascii_uppercase() <= b'7'
 }
 
+/// UUID v4(에이전트 세션 id). Claude Code는 `--session-id`에 진짜 UUID를 요구한다.
+pub fn uuid4() -> String {
+    use rand::Rng;
+    let mut b: [u8; 16] = rand::rng().random();
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variant RFC 4122
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
 /// 유닉스 ms → `YYYY-MM-DD`(UTC). 의존성 없이 계산한다.
 pub fn date_from_ms(ms: u64) -> String {
     let days = (ms / 86_400_000) as i64;
@@ -74,6 +91,17 @@ mod tests {
         assert_eq!(date_from_ms(1_762_600_000_000), "2025-11-08");
         assert_eq!(date_from_ms(1_797_000_000_000), "2026-12-11");
         assert_eq!(date_from_ms(1_783_620_000_000), "2026-07-09");
+    }
+
+    #[test]
+    fn uuid4_shape() {
+        let u = uuid4();
+        assert_eq!(u.len(), 36);
+        let parts: Vec<&str> = u.split('-').collect();
+        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert!(parts[2].starts_with('4'), "{u}");
+        assert!(["8", "9", "a", "b"].iter().any(|c| parts[3].starts_with(c)), "{u}");
+        assert_ne!(uuid4(), uuid4());
     }
 
     #[test]

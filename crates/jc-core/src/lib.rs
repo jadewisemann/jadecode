@@ -7,6 +7,7 @@
 //! 색인(`.jadecode/index.sqlite`)은 언제든 지우고 일지에서 다시 만들 수 있다.
 
 pub mod card;
+pub mod scaffold;
 pub mod event;
 pub mod index;
 pub mod store;

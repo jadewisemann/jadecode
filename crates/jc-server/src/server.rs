@@ -35,6 +35,20 @@ pub enum Cmd {
     CheckCard {
         card: String,
     },
+    /// 새로 만든 카드를 색인에 등록한다(사건 없음).
+    RegisterCard {
+        card: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// 인스턴스 관리자가 카드 상태를 바꾼다(권한 대기 등). `task.md`가 없으면 무시한다.
+    SetFrontRaw {
+        card: String,
+        status: Option<String>,
+        stage: Option<String>,
+        kind: String,
+        body: Value,
+        reply: oneshot::Sender<Result<Vec<u64>, String>>,
+    },
     Stats {
         reply: oneshot::Sender<Value>,
     },
@@ -46,6 +60,21 @@ pub struct Shared {
     pub cmd: mpsc::Sender<Cmd>,
     pub started: Instant,
     pub sent: AtomicU64,
+    pub instances: crate::instances::InstanceManager,
+}
+
+impl Shared {
+    /// 이벤트를 일지에 넣는다(관리자·RPC 공통 경로).
+    pub async fn append(&self, events: Vec<NewEvent>) -> Result<Vec<u64>, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd
+            .send(Cmd::Append { events, reply: tx })
+            .await
+            .map_err(|_| Error::internal("writer gone"))?;
+        rx.await
+            .map_err(|_| Error::internal("writer gone"))?
+            .map_err(Error::internal)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +82,14 @@ pub struct ServerConfig {
     pub fsync: Fsync,
     pub watch: bool,
     pub debounce: Duration,
+    /// 인스턴스가 붙을 MCP 소켓 경로(서버가 여는 소켓과 같아야 한다).
+    pub mcp_socket: PathBuf,
+    /// `jadecode-mcp` 바이너리 경로(없으면 PATH에서 찾는다).
+    pub mcp_bin: Option<PathBuf>,
+    /// `claude` 바이너리 경로(없으면 PATH).
+    pub claude_bin: Option<String>,
+    /// 오케스트레이터 깨우기 모으기 간격.
+    pub wake_interval: Duration,
 }
 
 impl Default for ServerConfig {
@@ -61,8 +98,26 @@ impl Default for ServerConfig {
             fsync: Fsync::Batch,
             watch: true,
             debounce: Duration::from_millis(30),
+            mcp_socket: PathBuf::new(),
+            mcp_bin: None,
+            claude_bin: None,
+            wake_interval: Duration::from_millis(300),
         }
     }
+}
+
+/// `jadecode-mcp`를 찾는다: 환경변수 → 실행 파일 옆 → PATH.
+fn default_mcp_bin() -> PathBuf {
+    if let Some(p) = std::env::var_os("JADECODE_MCP") {
+        return PathBuf::from(p);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let sib = exe.with_file_name("jadecode-mcp");
+        if sib.exists() {
+            return sib;
+        }
+    }
+    PathBuf::from("jadecode-mcp")
 }
 
 /// 쓰기 스레드: `Store`를 혼자 소유한다. 여러 명령을 묶어 한 번에 커밋한다(묶음 쓰기).
@@ -122,6 +177,16 @@ fn writer_thread(
                     flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
                     let r = st
                         .set_front(&card, &front, &kind, body)
+                        .map_err(|e| e.to_string());
+                    let _ = reply.send(r);
+                }
+                Cmd::RegisterCard { card, reply } => {
+                    flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
+                    let _ = reply.send(st.register_card(&card).map_err(|e| e.to_string()));
+                }
+                Cmd::SetFrontRaw { card, status, stage, kind, body, reply } => {
+                    flush(&mut st, &mut pend, &mut pend_reply, &mut batches, &mut appended);
+                    let r = set_front_raw(&mut st, &card, status.as_deref(), stage.as_deref(), &kind, body)
                         .map_err(|e| e.to_string());
                     let _ = reply.send(r);
                 }
@@ -270,12 +335,40 @@ where
             .to_string(),
     );
 
+    // MCP 소켓은 인스턴스가 붙을 곳이다. 지정이 없으면 연 소켓을 그대로 쓴다(Unix일 때).
+    let socket_for_mcp = if config.mcp_socket.as_os_str().is_empty() {
+        match &bound {
+            Bound::Unix { path, .. } => path.clone(),
+            Bound::Tcp { .. } => PathBuf::new(),
+        }
+    } else {
+        config.mcp_socket.clone()
+    };
+    let claude_bin = config
+        .claude_bin
+        .clone()
+        .or_else(|| std::env::var("JADECODE_CLAUDE").ok())
+        .unwrap_or_else(|| "claude".to_string());
+    let mcp_bin = config
+        .mcp_bin
+        .clone()
+        .or_else(|| std::env::var("JADECODE_MCP").ok().map(PathBuf::from))
+        .unwrap_or_else(default_mcp_bin);
+    let instances = crate::instances::InstanceManager::spawn(
+        root.clone(),
+        cmd_tx.clone(),
+        claude_bin,
+        mcp_bin,
+        socket_for_mcp,
+        config.wake_interval,
+    );
     let shared = Arc::new(Shared {
         root: root.clone(),
         head: head_rx,
         cmd: cmd_tx,
         started: t0,
         sent: AtomicU64::new(0),
+        instances,
     });
 
     match bound {
@@ -509,6 +602,107 @@ where
                     let _ = out.send(rpc::ok(&id, v)).await;
                 });
             }
+            Method::CardAdd => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let resp = match card_add(sh2, &params).await {
+                        Ok(v) => rpc::ok(&id, v),
+                        Err(e) => rpc::err(&id, e),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::ProjectAdd => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let resp = match project_add(sh2, &params).await {
+                        Ok(v) => rpc::ok(&id, v),
+                        Err(e) => rpc::err(&id, e),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::InstancesList => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let mut v = json!({"instances": sh2.instances.list().await});
+                    v["head_seq"] = json!(*sh2.head.borrow());
+                    let _ = out.send(rpc::ok(&id, v)).await;
+                });
+            }
+            Method::InstanceStart => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let resp = match instance_start(sh2, &params).await {
+                        Ok(v) => rpc::ok(&id, v),
+                        Err(e) => rpc::err(&id, e),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::InstanceSend => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let resp = match instance_send(&sh2, &params).await {
+                        Ok(v) => rpc::ok(&id, v),
+                        Err(e) => rpc::err(&id, e),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::InstanceStop => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let inst = match require_str(&params, "instance") {
+                        Ok(x) => x,
+                        Err(e) => {
+                            let _ = out.send(rpc::err(&id, e)).await;
+                            return;
+                        }
+                    };
+                    let resp = match sh2.instances.stop(&inst).await {
+                        Ok(()) => rpc::ok(&id, json!({"instance": inst, "stopped": true})),
+                        Err(e) => rpc::err(&id, Error::refused(e.to_string(), "instance")),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::PermissionRequest => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let resp = match permission_request(sh2, &params).await {
+                        Ok(v) => rpc::ok(&id, v),
+                        Err(e) => rpc::err(&id, e),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::PermissionResolve => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let seq = params["request_seq"].as_u64().unwrap_or(0);
+                    let allow = params["allow"].as_bool().unwrap_or(false);
+                    let msg = params["message"].as_str().unwrap_or("").to_string();
+                    let resp = match sh2.instances.resolve_permission(seq, allow, &msg).await {
+                        Ok(()) => rpc::ok(&id, json!({"request_seq": seq, "allow": allow})),
+                        Err(e) => rpc::err(&id, Error::refused(e.to_string(), "permission")),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::BotsList => {
+                let sh2 = sh.clone();
+                let resp = bots_list(&sh2).map(|v| rpc::ok(&id, v)).unwrap_or_else(|e| rpc::err(&id, e));
+                let _ = out.send(resp).await;
+            }
+            Method::PolicyGet => {
+                let sh2 = sh.clone();
+                let resp = match policy_get(&sh2) {
+                    Ok(v) => rpc::ok(&id, v),
+                    Err(e) => rpc::err(&id, e),
+                };
+                let _ = out.send(resp).await;
+            }
             Method::ProjectsList => {
                 let sh2 = sh.clone();
                 tokio::spawn(async move {
@@ -576,6 +770,31 @@ where
     }
     sender.abort();
     Ok(())
+}
+
+/// 카드 상태·단계 칸을 바꾸고 사건을 남긴다. 인스턴스 관리자·권한 처리에서 쓴다.
+fn set_front_raw(
+    st: &mut Store,
+    card: &str,
+    status: Option<&str>,
+    stage: Option<&str>,
+    kind: &str,
+    body: Value,
+) -> Result<Vec<u64>> {
+    let p = st.root.join(card).join("task.md");
+    let content = std::fs::read_to_string(&p)?;
+    let cs = card_state(&content)?;
+    let mut front = cs.front.clone();
+    if let Some(s) = status {
+        front.status = s.to_string();
+    }
+    if let Some(s) = stage {
+        front.stage = s.to_string();
+        if let Some(i) = front.path.iter().position(|x| x == s) {
+            front.path_index = i;
+        }
+    }
+    st.set_front(card, &front, kind, body)
 }
 
 /// 쓰기 스레드에 이벤트를 넣고 커밋을 기다린다(승인 시점 = 돌려준 seq).
@@ -891,4 +1110,288 @@ async fn subscription(
         }
         head_rx.changed().await?;
     }
+}
+
+// ---------- 인스턴스·권한·봇·정책 RPC ----------
+
+/// `instance.start {role, project, card?, bot, model?, id?}`
+async fn instance_start(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
+    let role = crate::instances::Role::parse(
+        params.get("role").and_then(|v| v.as_str()).unwrap_or("worker"),
+    );
+    let project = require_str(params, "project")?;
+    let bot = params
+        .get("bot")
+        .and_then(|v| v.as_str())
+        .unwrap_or("worker")
+        .to_string();
+    let card = match role {
+        crate::instances::Role::Worker => Some(resolve_card(&sh, &require_str(params, "card")?)?),
+        crate::instances::Role::Orchestrator => None,
+    };
+    let model = params.get("model").and_then(|v| v.as_str()).map(String::from);
+    let id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            let tag = match role {
+                crate::instances::Role::Worker => "w",
+                crate::instances::Role::Orchestrator => "o",
+            };
+            format!("{tag}-{}", jc_core::ulid::new_id().to_lowercase())
+        });
+    let spec = crate::instances::build_spec(&sh.root, id, role, project, card, &bot, model)
+    .map_err(|e| Error::invalid_params(e.to_string()))?;
+    let info = sh
+        .instances
+        .start(spec)
+        .await
+        .map_err(|e| Error::internal(e.to_string()))?;
+    Ok(json!({"instance": info}))
+}
+
+/// `instance.send {instance, text}`
+async fn instance_send(sh: &Shared, params: &Value) -> Result<Value, Error> {
+    let inst = require_str(params, "instance")?;
+    let text = require_str(params, "text")?;
+    sh.instances
+        .send(&inst, &text)
+        .await
+        .map_err(|e| Error::refused(e.to_string(), "instance"))?;
+    Ok(json!({"instance": inst, "sent": true}))
+}
+
+/// `permission.request {tool_name, input, tool_use_id, instance}`
+/// Claude Code의 `--permission-prompt-tool`이 부른다. 응답 계약을 그대로 돌려준다.
+async fn permission_request(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
+    let inst = require_str(params, "instance")?;
+    let tool = params
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let input = params.get("input").cloned().unwrap_or(json!({}));
+    let tuid = params
+        .get("tool_use_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    // AskUserQuestion은 권한 RPC가 곧 질문 RPC다(S2). 질문 메시지로 바꾼다.
+    if tool == "AskUserQuestion" {
+        return ask_user_question(sh, &inst, &input).await;
+    }
+    let d = sh.instances.permission(&inst, &tool, input.clone(), &tuid).await;
+    Ok(if d.allow {
+        json!({"behavior": "allow", "updatedInput": input})
+    } else {
+        json!({"behavior": "deny", "message": d.message})
+    })
+}
+
+/// AskUserQuestion → `msg.ask` 이벤트 → 사람/오케스트레이터가 `permission.resolve`로 답하면
+/// `updatedInput.answers`로 돌려준다. 지금은 답이 오면 allow, 시간 초과면 deny.
+async fn ask_user_question(sh: Arc<Shared>, inst: &str, input: &Value) -> Result<Value, Error> {
+    let qs = input
+        .get("questions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let first = qs.first().cloned().unwrap_or(json!({}));
+    let q = first
+        .get("question")
+        .and_then(|v| v.as_str())
+        .unwrap_or("질문")
+        .to_string();
+    let options: Vec<String> = first
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|o| o.get("label").and_then(|l| l.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (topic, card) = {
+        let list = sh.instances.list().await;
+        match list.into_iter().find(|i| i.id == inst) {
+            Some(i) => (
+                match &i.card {
+                    Some(c) => jc_core::topic::card_topic(c),
+                    None => format!("project/{}", i.project),
+                },
+                i.card,
+            ),
+            None => ("global".to_string(), None),
+        }
+    };
+    let seqs = sh
+        .append(vec![NewEvent::new(
+            topic,
+            "msg.ask",
+            json!({"question": q, "options": options, "via":"AskUserQuestion","instance":inst,
+                   "actor":{"role":"worker","instance":inst,"card":card}}),
+        )])
+        .await?;
+    let seq = *seqs.first().unwrap_or(&0);
+    // 사람 답은 `permission.resolve`로 온다. 여기서는 구현을 단순하게: 바로 deny하고
+    // 질문 이벤트로 남긴다(답은 다음 턴으로 전달 — S3가 시험한 방식).
+    let _ = seq;
+    Ok(json!({
+        "behavior": "deny",
+        "message": "이 질문은 jadecode가 이벤트로 남겼다. 답이 오면 새 메시지로 전달된다. 지금은 하던 일을 계속하거나 기다려라.",
+    }))
+}
+
+/// `bots.list`
+fn bots_list(sh: &Shared) -> Result<Value, Error> {
+    let dir = sh.root.join("bots");
+    let mut out = vec![];
+    if dir.is_dir() {
+        let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map_err(|e| Error::internal(e.to_string()))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        names.sort();
+        for p in names {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            match jc_driver::spec::BotSpec::load(&p) {
+                Ok(spec) => out.push(json!({
+                    "name": spec.name, "dir": name, "title": spec.title,
+                    "agent": spec.agent, "model": spec.model, "policy": spec.policy,
+                    "instructions": spec.instructions, "skills": spec.skills,
+                })),
+                Err(e) => out.push(json!({"name": name, "dir": name, "error": e.to_string()})),
+            }
+        }
+    }
+    Ok(json!({"bots": out}))
+}
+
+/// `policy.get` — 사람이 정한 값(봇 수 상한·예산·사람 절차·권한 시간 상한).
+fn policy_get(sh: &Shared) -> Result<Value, Error> {
+    let p = sh.root.join("policy/policy.toml");
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let table: toml::Table = text.parse().unwrap_or_default();
+    let v = serde_json::to_value(table).map_err(|e| Error::internal(e.to_string()))?;
+    let mut out = json!({"policy": v, "path": p.display().to_string()});
+    out["defaults"] = json!({
+        "permission_timeout_min": 25,
+        "human_procedures": ["merge_protected_branch","deploy","external_message","budget_exceeded","project_delete"],
+        "bots_max": 10,
+    });
+    Ok(out)
+}
+
+// ---------- 생성 RPC(서버가 돌 때 CLI가 쓴다) ----------
+
+/// `card.add {project, title, path?, repos?, depends_on?, parent?, body?}`
+async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
+    let project = require_str(params, "project")?;
+    let title = require_str(params, "title")?;
+    let path: Vec<String> = params["path"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_else(|| {
+            ["refine", "implement", "verify", "pr", "report"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
+    let repos: Vec<jc_core::taskmd::RepoRef> = params["repos"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let depends_on: Vec<String> = params["depends_on"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let parent = params.get("parent").and_then(|v| v.as_str()).map(String::from);
+    let body = params.get("body").and_then(|v| v.as_str()).map(String::from);
+    let nc = jc_core::NewCard {
+        project,
+        title,
+        path,
+        repos,
+        depends_on,
+        parent,
+        body,
+    };
+    let root = sh.root.clone();
+    let (rel, id, front) = tokio::task::spawn_blocking(move || jc_core::card::materialize(&root, &nc))
+        .await
+        .map_err(|e| Error::internal(e.to_string()))?
+        .map_err(|e| Error::invalid_params(e.to_string()))?;
+    let (rtx, rrx) = oneshot::channel();
+    sh.cmd
+        .send(Cmd::RegisterCard { card: rel.clone(), reply: rtx })
+        .await
+        .map_err(|_| Error::internal("writer gone"))?;
+    let _ = rrx.await;
+    let seqs = sh
+        .append(vec![
+            NewEvent::new(
+                card_topic(&rel),
+                "card.created",
+                json!({"id":id,"title":front.title,"project":front.project,"path":front.path,
+                       "repos":front.repos,"depends_on":front.depends_on,"parent":front.parent}),
+            ),
+            NewEvent::new(
+                project_topic(&format!("work/{}", front.project)),
+                "card.added",
+                json!({"card":rel,"id":id,"title":front.title}),
+            ),
+        ])
+        .await?;
+    Ok(json!({"path": rel, "id": id, "seqs": seqs}))
+}
+
+/// `project.add {name, repo?}`
+async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
+    let name = require_str(params, "name")?;
+    let repo = params.get("repo").and_then(|v| v.as_str()).map(String::from);
+    let root = sh.root.clone();
+    let slug: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        return Err(Error::invalid_params("project name needs ascii letters or digits"));
+    }
+    let rel = format!("work/{slug}");
+    let abs = root.join(&rel);
+    if abs.exists() {
+        return Err(Error::refused(format!("project exists: {slug}"), "exists"));
+    }
+    tokio::fs::create_dir_all(&abs)
+        .await
+        .map_err(|e| Error::internal(e.to_string()))?;
+    let repos = match &repo {
+        Some(r) => format!("[[repos]]\nname = \"{r}\"\n"),
+        None => String::new(),
+    };
+    tokio::fs::write(
+        abs.join("project.toml"),
+        format!("# jadecode 프로젝트\nname = \"{}\"\nslug = \"{slug}\"\n{repos}", name.replace('"', "'")),
+    )
+    .await
+    .map_err(|e| Error::internal(e.to_string()))?;
+    let seqs = sh
+        .append(vec![NewEvent::new(
+            project_topic(&rel),
+            "project.created",
+            json!({"name":name,"slug":slug,"repos":repo}),
+        )])
+        .await?;
+    Ok(json!({"path": rel, "slug": slug, "seqs": seqs}))
 }

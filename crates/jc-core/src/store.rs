@@ -71,6 +71,8 @@ struct ParsedLine {
 pub struct Store {
     pub root: PathBuf,
     pub conn: Connection,
+    /// 워크스페이스당 쓰기 프로세스는 하나다(B2 단일 쓰기 스레드). 다른 프로세스가 열면 여기서 막힌다.
+    _lock: File,
     next_seq: u64,
     pub fsync: Fsync,
     /// 일지 상대 경로 → 현재 바이트 길이
@@ -87,6 +89,7 @@ impl Store {
     pub fn open(root: &Path, fsync: Fsync) -> Result<(Store, RecoveryStats, Vec<NewEvent>)> {
         let t0 = Instant::now();
         let mut st = RecoveryStats::default();
+        let lock = acquire_writer_lock(root)?;
         let (mut conn, index_last, discarded) = index::open_or_rebuild(root)?;
         st.index_discarded = discarded;
         st.index_last_seq_before = index_last;
@@ -304,6 +307,7 @@ impl Store {
             Store {
                 root: root.to_path_buf(),
                 conn,
+                _lock: lock,
                 next_seq: have_upto + 1,
                 fsync,
                 jlen,
@@ -443,6 +447,14 @@ impl Store {
         Ok(())
     }
 
+    /// 새로 만든 카드를 색인·known에 등록한다(사건은 만들지 않는다 — card.created가 따로 있다).
+    pub fn register_card(&mut self, card: &str) -> Result<()> {
+        let content = fs::read_to_string(self.root.join(card).join("task.md"))?;
+        let cs = card_state(&content)?;
+        self.known.insert(card.to_string(), cs.clone());
+        self.upsert_card(card, &cs)
+    }
+
     /// 감시가 알린(또는 쓰기 전에 확인하는) `task.md` 변화 처리. 쓰기 스레드에서만 부른다.
     pub fn check_card(&mut self, card: &str, source: &str) -> Result<Vec<u64>> {
         let path = self.root.join(card).join("task.md");
@@ -527,6 +539,28 @@ impl Store {
         self.upsert_card(card, &final_cs)?;
         Ok(seqs)
     }
+}
+
+/// 워크스페이스 쓰기 잠금. 서버가 살아 있는 동안 CLI가 직접 쓰면 seq가 어긋난다
+/// (두 프로세스가 각자 `next_seq`를 들고 색인에 쓰면 `UNIQUE constraint failed: events.seq`).
+pub fn acquire_writer_lock(root: &Path) -> Result<File> {
+    use std::os::unix::io::AsRawFd;
+    let dir = root.join(".jadecode");
+    fs::create_dir_all(&dir)?;
+    let p = dir.join("writer.lock");
+    let f = OpenOptions::new().create(true).read(true).write(true).open(&p)?;
+    let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if r != 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            bail!(
+                "workspace is already open for writing by another process ({}). 서버가 돌고 있으면 RPC를 써라: jadecode rpc …",
+                p.display()
+            );
+        }
+        return Err(anyhow!("flock: {e}"));
+    }
+    Ok(f)
 }
 
 fn part_row(rel: &str, cs: &CardState) -> CardRow {
@@ -731,7 +765,7 @@ pub fn card_topic_of(rel: &str) -> String {
 /// 최근 이벤트(색인에서 읽는다). 서버 없이 CLI `tail`이 쓴다.
 pub fn read_tail(root: &Path, topics: &[String], limit: u64) -> Result<Vec<serde_json::Value>> {
     let conn = index::open_index_ro(root)?;
-    let (cond, args) = crate::topic::topic_sql(topics, 1);
+    let (cond, args) = crate::topic::topic_sql(topics, 2);
     let last: i64 = conn
         .query_row("SELECT COALESCE((SELECT v FROM meta WHERE k='last_seq'),0)", [], |r| r.get(0))
         .unwrap_or(0);

@@ -75,6 +75,8 @@ impl Workspace {
                 .create(true)
                 .append(true)
                 .open(abs.join("events/global.jsonl"))?;
+            // 기본 봇 네 개와 정책(사람이 정하는 값)을 심는다.
+            crate::scaffold::install(&abs)?;
         }
         Ok((
             Self {

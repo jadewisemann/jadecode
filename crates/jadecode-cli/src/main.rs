@@ -37,6 +37,19 @@ fn usage() -> &'static str {
   server [--socket <p>] [--port <p>]     서버 띄우기(기본 .jadecode/jadecode.sock)
   tail [--topics a,b] [--limit n]        최근 이벤트
   check                                  일지·색인 전수 검사
+  rpc <method> [json]                    서버에 JSON-RPC 한 번
+  rpc-stream                             stdin의 JSON-RPC 줄을 한 연결로 보낸다
+  bot list                               봇 목록
+  instance list                          인스턴스 목록
+  instance start <bot> --project <p>     인스턴스 띄우기
+       [--card <card>] [--role worker|orchestrator] [--model <m>]
+  instance send <instance> <text>        인스턴스에 메시지
+  instance stop <instance>               인스턴스 멈춤
+  permission list                        사람 답을 기다리는 권한 요청
+  permission allow <request_seq> [msg]   승인
+  permission deny <request_seq> [msg]    거절
+  policy                                 사람이 정한 값 보기
+  top                                    보드(카드 목록)
 "
 }
 
@@ -67,12 +80,20 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("project") => {
-            let ws = open_ws()?;
-            let mut ws = ws;
+            let mut ws = open_ws()?;
             match args.get(1).map(|s| s.as_str()) {
                 Some("add") => {
                     let name = args.get(2).context("project add <name>")?;
                     let repo = flag_value(&args, "--repo");
+                    if let Some(sock) = server_up(&ws, &args) {
+                        let out = rt().block_on(rpc_call(
+                            &sock,
+                            "project.add",
+                            json!({"name": name, "repo": repo}),
+                        ))?;
+                        println!("{}", ws.root.join(out["path"].as_str().unwrap_or("")).display());
+                        return Ok(());
+                    }
                     let p = ws.add_project(name, repo.as_deref())?;
                     println!("{}", p.display());
                     Ok(())
@@ -102,6 +123,16 @@ fn main() -> Result<()> {
                         .collect();
                     let depends_on = all_values(&args, "--after");
                     let parent = flag_value(&args, "--parent");
+                    if let Some(sock) = server_up(&ws, &args) {
+                        let out = rt().block_on(rpc_call(
+                            &sock,
+                            "card.add",
+                            json!({"project":project,"title":title,"path":path,"repos":repos,
+                                   "depends_on":depends_on,"parent":parent}),
+                        ))?;
+                        println!("{}", ws.root.join(out["path"].as_str().unwrap_or("")).display());
+                        return Ok(());
+                    }
                     let p = ws.add_card(NewCard {
                         project,
                         title: title.clone(),
@@ -143,6 +174,15 @@ fn main() -> Result<()> {
                     let needle = args.get(2).context("card status <card> <status>")?;
                     let status = args.get(3).context("card status <card> <status>")?;
                     let c = ws.find_card(needle)?;
+                    if let Some(sock) = server_up(&ws, &args) {
+                        let out = rt().block_on(rpc_call(
+                            &sock,
+                            "card.set_status",
+                            json!({"card": c.rel, "status": status}),
+                        ))?;
+                        println!("{}\t{}", c.rel, out["seqs"][0].as_u64().unwrap_or(0));
+                        return Ok(());
+                    }
                     let mut store = ws.store()?;
                     let mut front = c.state.front.clone();
                     front.status = status.clone();
@@ -162,6 +202,20 @@ fn main() -> Result<()> {
                         bail!("card at end of path ({})", c.state.front.stage);
                     };
                     let from = c.state.front.stage.clone();
+                    if let Some(sock) = server_up(&ws, &args) {
+                        let out = rt().block_on(rpc_call(
+                            &sock,
+                            "card.advance",
+                            json!({"card": c.rel}),
+                        ))?;
+                        println!(
+                            "{}\t{}\t{}",
+                            c.rel,
+                            out["stage"].as_str().unwrap_or(""),
+                            out["seqs"][0].as_u64().unwrap_or(0)
+                        );
+                        return Ok(());
+                    }
                     let mut front = c.state.front.clone();
                     front.path_index += 1;
                     front.stage = next.to_string();
@@ -223,6 +277,179 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string(&e)?);
             }
             Ok(())
+        }
+        Some("bot") => {
+            let ws = open_ws()?;
+            let sock = socket_path(&ws, &args);
+            let out = rt().block_on(rpc_call(&sock, "bots.list", json!({})))?;
+            for b in out["bots"].as_array().cloned().unwrap_or_default() {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    b["name"].as_str().unwrap_or(""),
+                    b["title"].as_str().unwrap_or(""),
+                    b["model"].as_str().unwrap_or("-"),
+                    b["policy"].as_str().unwrap_or(""),
+                    b["error"].as_str().unwrap_or(""),
+                );
+            }
+            Ok(())
+        }
+        Some("policy") => {
+            let ws = open_ws()?;
+            let sock = socket_path(&ws, &args);
+            let out = rt().block_on(rpc_call(&sock, "policy.get", json!({})))?;
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            Ok(())
+        }
+        Some("top") => {
+            let ws = open_ws()?;
+            let sock = socket_path(&ws, &args);
+            let out = rt().block_on(rpc_call(&sock, "cards.list", json!({})))?;
+            let cards = out["cards"].as_array().cloned().unwrap_or_default();
+            // 단계별로 묶어 보드처럼 보여 준다.
+            let mut by_stage: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+            for c in cards {
+                by_stage
+                    .entry(c["stage"].as_str().unwrap_or("-").to_string())
+                    .or_default()
+                    .push(c);
+            }
+            for (stage, cs) in by_stage {
+                println!("[{stage}]");
+                for c in cs {
+                    println!(
+                        "  {}  {}  {} ({})",
+                        c["status"].as_str().unwrap_or(""),
+                        c["title"].as_str().unwrap_or(""),
+                        c["id"].as_str().unwrap_or(""),
+                        c["project"].as_str().unwrap_or("")
+                    );
+                }
+            }
+            Ok(())
+        }
+        Some("instance") => {
+            let ws = open_ws()?;
+            let sock = socket_path(&ws, &args);
+            match args.get(1).map(|s| s.as_str()) {
+                Some("list") => {
+                    let out = rt().block_on(rpc_call(&sock, "instances.list", json!({})))?;
+                    for i in out["instances"].as_array().cloned().unwrap_or_default() {
+                        println!(
+                            "{}\t{}\t{}\t{}\t{}\tturns={}\tpid={}",
+                            i["id"].as_str().unwrap_or(""),
+                            i["role"].as_str().unwrap_or(""),
+                            i["state"].as_str().unwrap_or(""),
+                            i["bot"].as_str().unwrap_or(""),
+                            i["card"].as_str().or(i["project"].as_str()).unwrap_or(""),
+                            i["turns"].as_u64().unwrap_or(0),
+                            i["pid"].as_u64().unwrap_or(0),
+                        );
+                    }
+                    Ok(())
+                }
+                Some("start") => {
+                    let bot = args.get(2).context("instance start <bot> --project <p>")?;
+                    let project = flag_value(&args, "--project").context("--project <p>")?;
+                    let role = flag_value(&args, "--role").unwrap_or_else(|| {
+                        if bot == "orchestrator" { "orchestrator".into() } else { "worker".into() }
+                    });
+                    let mut params = json!({"role": role, "project": project, "bot": bot});
+                    if let Some(c) = flag_value(&args, "--card") {
+                        params["card"] = json!(c);
+                    }
+                    if let Some(m) = flag_value(&args, "--model") {
+                        params["model"] = json!(m);
+                    }
+                    if let Some(i) = flag_value(&args, "--id") {
+                        params["id"] = json!(i);
+                    }
+                    let out = rt().block_on(rpc_call(&sock, "instance.start", params))?;
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                    Ok(())
+                }
+                Some("send") => {
+                    let inst = args.get(2).context("instance send <instance> <text>")?;
+                    let text = args[3..].join(" ");
+                    if text.trim().is_empty() {
+                        bail!("text required");
+                    }
+                    let out = rt().block_on(rpc_call(
+                        &sock,
+                        "instance.send",
+                        json!({"instance": inst, "text": text}),
+                    ))?;
+                    println!("{}", out);
+                    Ok(())
+                }
+                Some("stop") => {
+                    let inst = args.get(2).context("instance stop <instance>")?;
+                    let out = rt().block_on(rpc_call(
+                        &sock,
+                        "instance.stop",
+                        json!({"instance": inst}),
+                    ))?;
+                    println!("{}", out);
+                    Ok(())
+                }
+                _ => bail!(usage()),
+            }
+        }
+        Some("permission") => {
+            let ws = open_ws()?;
+            let sock = socket_path(&ws, &args);
+            match args.get(1).map(|s| s.as_str()) {
+                Some("list") => {
+                    // 대기 중인 요청은 일지에서 `permission.requested` 뒤 `permission.resolved`가 없는 것.
+                    let evs = jc_core::store::read_tail(&ws.root, &[], 500)?;
+                    let mut open: std::collections::BTreeMap<u64, Value> = Default::default();
+                    for e in evs {
+                        let kind = e["kind"].as_str().unwrap_or("");
+                        let seq = e["seq"].as_u64().unwrap_or(0);
+                        if kind == "permission.requested" {
+                            open.insert(seq, e);
+                        } else if kind == "permission.resolved" {
+                            if let Some(s) = e["body"]["request_seq"].as_u64() {
+                                open.remove(&s);
+                            }
+                        }
+                    }
+                    if open.is_empty() {
+                        println!("(대기 중인 권한 요청 없음)");
+                    }
+                    for (seq, e) in open {
+                        println!(
+                            "{}\t{}\t{}\t{}",
+                            seq,
+                            e["body"]["instance"].as_str().unwrap_or(""),
+                            e["body"]["tool"].as_str().unwrap_or(""),
+                            serde_json::to_string(&e["body"]["input"]).unwrap_or_default()
+                        );
+                    }
+                    Ok(())
+                }
+                Some("allow") | Some("deny") => {
+                    let allow = args[1] == "allow";
+                    let seq: u64 = args
+                        .get(2)
+                        .context("permission allow|deny <request_seq> [msg]")?
+                        .parse()?;
+                    let msg = args[3..].join(" ");
+                    let msg = if msg.trim().is_empty() {
+                        if allow { "사람이 승인함".to_string() } else { "사람이 거절함".to_string() }
+                    } else {
+                        msg
+                    };
+                    let out = rt().block_on(rpc_call(
+                        &sock,
+                        "permission.resolve",
+                        json!({"request_seq": seq, "allow": allow, "message": msg}),
+                    ))?;
+                    println!("{out}");
+                    Ok(())
+                }
+                _ => bail!(usage()),
+            }
         }
         Some("check") => {
             let ws = open_ws()?;
@@ -337,6 +564,39 @@ fn open_ws() -> Result<Workspace> {
 
 fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
+}
+
+async fn rpc_call(socket: &PathBuf, method: &str, params: Value) -> Result<Value> {
+    let stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("서버에 붙을 수 없다: {}", socket.display()))?;
+    let (ws, _resp) = tokio_tungstenite::client_async("ws://localhost/rpc", stream).await?;
+    let (mut w, mut r) = ws.split();
+    w.send(Message::text(
+        json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}).to_string(),
+    ))
+    .await?;
+    while let Some(m) = r.next().await {
+        let m = m?;
+        if let Message::Text(t) = m {
+            let v: Value = serde_json::from_str(&t)?;
+            if let Some(e) = v.get("error") {
+                bail!("{}: {}", e["code"], e["message"].as_str().unwrap_or("error"));
+            }
+            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+    bail!("no response")
+}
+
+/// 서버가 살아 있으면 RPC를 쓴다(쓰기 프로세스는 하나여야 한다).
+fn server_up(ws: &Workspace, args: &[String]) -> Option<PathBuf> {
+    let p = socket_path(ws, args);
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 fn socket_path(ws: &Workspace, args: &[String]) -> PathBuf {

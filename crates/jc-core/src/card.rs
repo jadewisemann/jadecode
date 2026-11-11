@@ -49,8 +49,46 @@ pub fn card_dir_name(title: &str, id: &str) -> String {
     }
 }
 
+/// 카드 폴더와 `task.md`만 만든다(이벤트는 호출자가 일지에 넣는다).
+/// 서버의 쓰기 스레드와 CLI가 같은 코드를 쓰게 하려고 분리했다.
+pub fn materialize(ws_root: &std::path::Path, c: &NewCard) -> Result<(String, String, Front)> {
+    if c.project.is_empty() {
+        bail!("project required");
+    }
+    let project_rel = format!("work/{}", c.project);
+    if !ws_root.join(&project_rel).is_dir() {
+        bail!("no such project: {}", c.project);
+    }
+    let id = ulid::new_id();
+    let dir = card_dir_name(&c.title, &id);
+    let rel = format!("{project_rel}/{dir}");
+    let abs = ws_root.join(&rel);
+    if abs.exists() {
+        bail!("card dir exists: {}", abs.display());
+    }
+    let front = Front {
+        id: id.clone(),
+        title: c.title.clone(),
+        project: c.project.clone(),
+        created: crate::ulid::date_from_ms(crate::event::now_ms()),
+        repos: c.repos.clone(),
+        path: c.path.clone(),
+        stage: c.path.first().cloned().unwrap_or_default(),
+        status: "idle".into(),
+        path_index: 0,
+        depends_on: c.depends_on.clone(),
+        parent: c.parent.clone(),
+    };
+    let body = c.body.clone().unwrap_or_else(|| DEFAULT_BODY.to_string());
+    let doc = taskmd::render_new_card(&front, &body)?;
+    std::fs::create_dir_all(&abs).with_context(|| format!("create {}", abs.display()))?;
+    std::fs::write(abs.join("task.md"), doc)?;
+    Ok((rel, id, front))
+}
+
 impl Workspace {
     /// 카드를 만든다. 폴더·`task.md`를 쓰고 `card.created` 이벤트를 남긴다.
+    /// **서버가 돌고 있으면 쓰지 않는다** — 그때는 RPC(`card.add`)를 써야 seq가 어긋나지 않는다.
     pub fn add_card(&mut self, c: NewCard) -> Result<PathBuf> {
         if c.project.is_empty() {
             bail!("project required");

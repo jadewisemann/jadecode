@@ -81,7 +81,17 @@ pub enum Method {
     CardSetStatus,
     CardAdvance,
     CardAppendEvent,
+    CardAdd,
+    ProjectAdd,
     ProjectsList,
+    InstancesList,
+    InstanceStart,
+    InstanceSend,
+    InstanceStop,
+    PermissionRequest,
+    PermissionResolve,
+    BotsList,
+    PolicyGet,
 }
 
 impl Method {
@@ -98,7 +108,17 @@ impl Method {
             "card.set_status" => Method::CardSetStatus,
             "card.advance" => Method::CardAdvance,
             "card.append_event" => Method::CardAppendEvent,
+            "card.add" => Method::CardAdd,
+            "project.add" => Method::ProjectAdd,
             "projects.list" => Method::ProjectsList,
+            "instances.list" => Method::InstancesList,
+            "instance.start" => Method::InstanceStart,
+            "instance.send" => Method::InstanceSend,
+            "instance.stop" => Method::InstanceStop,
+            "permission.request" => Method::PermissionRequest,
+            "permission.resolve" => Method::PermissionResolve,
+            "bots.list" => Method::BotsList,
+            "policy.get" => Method::PolicyGet,
             _ => return None,
         })
     }
@@ -116,7 +136,17 @@ impl Method {
             "card.set_status",
             "card.advance",
             "card.append_event",
+            "card.add",
+            "project.add",
             "projects.list",
+            "instances.list",
+            "instance.start",
+            "instance.send",
+            "instance.stop",
+            "permission.request",
+            "permission.resolve",
+            "bots.list",
+            "policy.get",
         ]
     }
 }

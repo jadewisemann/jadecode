@@ -47,6 +47,8 @@ async fn setup(path: &[&str]) -> (Harness, Vec<jc_core::workspace::CardEntry>) {
         fsync: jc_core::store::Fsync::Batch,
         watch: true,
         debounce: Duration::from_millis(20),
+        mcp_socket: socket.clone(),
+        ..Default::default()
     };
     let client = tokio::spawn(async move {
         let mut ready_tx = Some(ready_tx);
