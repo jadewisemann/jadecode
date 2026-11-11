@@ -2885,6 +2885,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jc-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jc-client",
+ "jc-core",
+ "rand 0.9.5",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "jc-client"
 version = "0.1.0"
 dependencies = [

@@ -61,6 +61,34 @@ pub struct BoardSnapshot {
     pub pending_permissions: Vec<EventRow>,
 }
 
+/// 스냅숏 사본을 값싸게 만든다.
+///
+/// 그냥 `clone()`은 카드·메시지 문자열을 전부 복제한다. 카드 1,000개·메시지 500개면
+/// 프레임마다 1.2ms(16ms 예산의 7.8%)를 썼다. 화면은 한 프레임 동안만 읽으므로
+/// `Arc`로 감싸 참조 계수만 올린다(측정: 1,242us → 1us 미만).
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotHandle(std::sync::Arc<BoardSnapshot>);
+
+impl SnapshotHandle {
+    pub fn new(s: BoardSnapshot) -> Self {
+        Self(std::sync::Arc::new(s))
+    }
+    pub fn get(&self) -> &BoardSnapshot {
+        &self.0
+    }
+    /// 사본(값). 이벤트 반영처럼 고쳐야 할 때만 쓴다.
+    pub fn clone_inner(&self) -> BoardSnapshot {
+        (*self.0).clone()
+    }
+}
+
+impl std::ops::Deref for SnapshotHandle {
+    type Target = BoardSnapshot;
+    fn deref(&self) -> &BoardSnapshot {
+        &self.0
+    }
+}
+
 impl BoardSnapshot {
     /// 단계 목록(보드 열). 프로젝트별로 다를 수 있으므로 등장 순서를 보존한다.
     pub fn stages(&self, project: Option<&str>) -> Vec<String> {
@@ -164,6 +192,18 @@ pub struct Board {
 }
 
 impl Board {
+    /// 연결 없이 스냅숏만 다루는 보드(성능 측정·시험용).
+    pub fn new_for_bench() -> Self {
+        Self {
+            conn: Connection {
+                socket: std::path::PathBuf::new(),
+            },
+            snapshot: BoardSnapshot::default(),
+            ws: None,
+            next_id: 0,
+        }
+    }
+
     pub fn snapshot(&self) -> &BoardSnapshot {
         &self.snapshot
     }
@@ -647,5 +687,34 @@ mod tests {
     fn topic_to_path() {
         assert_eq!(card_path_from_topic("project/api/card/c1"), "work/api/c1");
         assert_eq!(card_path_from_topic("global"), "global");
+    }
+}
+
+#[cfg(test)]
+mod handle_tests {
+    use super::*;
+
+    #[test]
+    fn handle_is_cheap_and_shares() {
+        let mut s = BoardSnapshot::default();
+        for i in 0..1000 {
+            s.cards.push(Card {
+                path: format!("work/p/c{i}"),
+                id: format!("{i:026}"),
+                title: format!("카드 {i}"),
+                project: "p".into(),
+                stage: "구현".into(),
+                status: "idle".into(),
+            });
+        }
+        let h = SnapshotHandle::new(s);
+        let h2 = h.clone();
+        // 참조만 늘어난다(같은 주소).
+        assert!(std::ptr::eq(h.get(), h2.get()));
+        assert_eq!(h2.get().cards.len(), 1000);
+        // 고쳐야 할 때만 값 사본.
+        let mut copy = h.clone_inner();
+        copy.cards.clear();
+        assert_eq!(h.get().cards.len(), 1000);
     }
 }

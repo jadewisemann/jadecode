@@ -58,8 +58,9 @@ enum Action {
 }
 
 pub struct App2 {
-    /// 백그라운드 구독 스레드가 갱신하는 스냅숏(화면은 이것만 읽는다).
-    snap: std::sync::Arc<std::sync::Mutex<BoardSnapshot>>,
+    /// 백그라운드 구독 스레드가 갱신하는 스냅숏. 화면은 `Arc` 사본을 받아 읽기만 한다
+    /// (예전에는 프레임마다 전체를 clone해 1.2ms를 썼다).
+    snap: std::sync::Arc<std::sync::Mutex<std::sync::Arc<BoardSnapshot>>>,
     view: View,
     project: Option<String>,
     selected_card: Option<String>,
@@ -149,7 +150,9 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
         .ok();
 
     // 구독 스레드: 이벤트를 받아 공유 스냅숏을 갱신한다(화면은 읽기만).
-    let snap = std::sync::Arc::new(std::sync::Mutex::new(board.snapshot().clone()));
+    let snap = std::sync::Arc::new(std::sync::Mutex::new(std::sync::Arc::new(
+        board.snapshot().clone(),
+    )));
     let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(board.snapshot().head_seq));
     {
         let snap = snap.clone();
@@ -171,7 +174,8 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
                             Some(rows) => {
                                 let head = board.snapshot().head_seq;
                                 if let Ok(mut s) = snap.lock() {
-                                    *s = board.snapshot().clone();
+                                    // 이벤트가 왔을 때만 새 스냅숏을 만든다(프레임마다 아님).
+                                    *s = std::sync::Arc::new(board.snapshot().clone());
                                 }
                                 seen.store(head, std::sync::atomic::Ordering::Relaxed);
                                 let _ = rows;
@@ -215,12 +219,12 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
 }
 
 impl App2 {
-    /// 백그라운드 스레드가 채운 스냅숏 사본(짧게 잡고 놓는다).
-    fn snap(&self) -> BoardSnapshot {
+    /// 백그라운드 스레드가 채운 스냅숏(참조 계수만 올린다).
+    fn snap(&self) -> std::sync::Arc<BoardSnapshot> {
         self.snap
             .lock()
             .map(|s| s.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|_| std::sync::Arc::new(BoardSnapshot::default()))
     }
 
     /// 동작 결과만 반영한다(보드 갱신은 구독 스레드가 한다).

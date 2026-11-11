@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/jc-core", "crates/jc-driver", "crates/jc-mcp", "crates/jc-server", "crates/jc-client", "crates/jadecode-cli"]
+members = ["crates/jc-core", "crates/jc-driver", "crates/jc-mcp", "crates/jc-server", "crates/jc-client", "crates/jc-bench", "crates/jadecode-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,6 +25,7 @@ jc-core = { path = "crates/jc-core" }
 jc-server = { path = "crates/jc-server" }
 jc-driver = { path = "crates/jc-driver" }
 jc-mcp = { path = "crates/jc-mcp" }
+jc-client = { path = "crates/jc-client" }
 
 [profile.release]
 debug = 1

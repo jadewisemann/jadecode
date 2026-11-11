@@ -302,3 +302,58 @@ fn fsync_off_still_commits_index() {
     let r = full_check(&d).unwrap();
     assert!(r.ok, "{r:?}");
 }
+
+#[test]
+fn batch_group_still_durable_after_flush() {
+    // BatchGroup은 fsync를 미루지만, flush_sync 뒤에는 일지가 디스크에 있어야 한다.
+    let (mut ws, d) = workspace();
+    let cards = add_cards(&mut ws, &["refine"], 2);
+    {
+        let mut s = ws.store_with(Fsync::BatchGroup).unwrap();
+        for i in 0..50 {
+            s.append(vec![jc_core::NewEvent::new(
+                jc_core::topic::card_topic(&cards[i % 2].rel),
+                "msg.note",
+                serde_json::json!({"i": i}),
+            )])
+            .unwrap();
+        }
+        s.flush_sync().unwrap();
+        // 프로젝트 생성 1 + 카드 생성 2(card.created) + card.added 2 + 노트 50 = 55
+        assert_eq!(s.last_seq(), 55);
+    }
+    // 다시 열어도 전부 남아 있고 이어 붙인다.
+    let (s2, stats, _) = Store::open(&d, Fsync::BatchGroup).unwrap();
+    assert_eq!(s2.last_seq(), 55, "{stats:?}");
+    assert_eq!(stats.tail_lines, 0);
+    assert!(full_check(&d).unwrap().ok);
+}
+
+#[test]
+fn batch_group_keeps_seq_order() {
+    let (mut ws, d) = workspace();
+    let cards = add_cards(&mut ws, &["refine"], 3);
+    let mut s = ws.store_with(Fsync::BatchGroup).unwrap();
+    // 여러 카드에 번갈아 넣어도 seq는 전역으로 이어져야 한다.
+    let mut all = vec![];
+    for i in 0..30 {
+        let seqs = s
+            .append(vec![jc_core::NewEvent::new(
+                jc_core::topic::card_topic(&cards[i % 3].rel),
+                "msg.note",
+                serde_json::json!({"i": i}),
+            )])
+            .unwrap();
+        all.extend(seqs);
+    }
+    s.flush_sync().unwrap();
+    let mut sorted = all.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), all.len(), "중복 seq");
+    assert_eq!(sorted.first().unwrap() + 1, *sorted.get(1).unwrap());
+    drop(s);
+    let r = full_check(&d).unwrap();
+    assert!(r.ok, "{r:?}");
+    assert_eq!(r.seq_gaps, 0);
+}

@@ -7,4 +7,4 @@ pub mod board;
 pub mod format;
 pub mod ui;
 
-pub use board::{Board, BoardSnapshot, Card, Connection};
+pub use board::{Board, BoardSnapshot, Card, Connection, SnapshotHandle};

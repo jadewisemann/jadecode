@@ -57,6 +57,7 @@ crates/jc-server    JSON-RPC over WebSocket, 쓰기 스레드, 구독, 감시, �
 crates/jc-client    GPUI 데스크톱 클라이언트(보드·카드·대화·봇)
 crates/jadecode-cli `jadecode` 바이너리
 vendor/xattr        GPUI 빌드용 xattr 0.2 사본(최신 libc 호환 패치)
+crates/jc-bench     성능 측정(일지·색인·구독·클라이언트 데이터 계층)
 tools/              e2e.sh · wake.sh · full.sh · agents.sh · client.sh · crash-test.sh
 ```
 
@@ -108,6 +109,22 @@ jadecode instance start fast --project api --card <카드> --agent omp
 - **인스턴스**: 하나당 `claude` 프로세스 하나, 세션 id는 서버가 만든 UUID. 죽으면 같은 폴더에서 `--resume`. 시작 `init`에 MCP가 `connected`가 아니면 즉시 재시작.
 - **권한**: 정책은 `--settings`로 넣고, 규칙 밖은 `mcp__jadecode__permission` RPC로 온다. 사람 답 상한 25분(< CLI 1800초). 막힘은 `permission.*` 일지가 정본.
 - **깨우기**: 오케스트레이터에게 0.3초 모아 다이제스트 사용자 턴으로 넣는다. 도구 없는 턴의 자동 보고는 깨우지 않는다.
+
+## 성능
+
+`docs/performance.md`에 측정값과 병목을 적었다. 요약(카드 1,000·이벤트 10만, 이 컨테이너):
+
+- 색인 재생성 1.0초, 전수 검사 0.5초, 재시작 RSS 89MB
+- 덧붙이기 233/s(기본 fsync) → **507/s**(`--fsync batch-group`)
+- 클라이언트 스냅숏 복제 869us → **0.025us**(`SnapshotHandle`)
+
+```sh
+cargo build --release -p jc-bench
+jc-bench all /tmp/bench --projects 12 --cards 1000 --events 100000
+```
+
+**GPU 렌더 병목은 이 환경에서 못 잰다**(virtio GPU + llvmpipe, GPUI는 Vulkan 필요). Mac에서 재는 절차는
+`docs/performance.md` 끝에 있다.
 
 ## RPC
 

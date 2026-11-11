@@ -22,8 +22,10 @@ use std::time::Instant;
 pub enum Fsync {
     /// 한 줄마다 fsync (테스트·아주 보수적)
     Always,
-    /// 묶음 끝에 한 번(기본)
+    /// 한 묶음(append 호출) 끝에 한 번
     Batch,
+    /// 여러 묶음을 모아 한 번 fsync(처리량용). `batch_window`/`batch_max`를 따른다.
+    BatchGroup,
     /// fsync 없음(벤치)
     Off,
 }
@@ -34,8 +36,9 @@ impl std::str::FromStr for Fsync {
         Ok(match s {
             "always" => Fsync::Always,
             "batch" => Fsync::Batch,
+            "batch-group" => Fsync::BatchGroup,
             "off" => Fsync::Off,
-            _ => bail!("fsync: always|batch|off"),
+            _ => bail!("fsync: always|batch|batch-group|off"),
         })
     }
 }
@@ -82,6 +85,16 @@ pub struct Store {
     known: HashMap<String, CardState>,
     pub stats_self_suppressed: u64,
     pub cas_retries: u64,
+    /// BatchGroup에서 fsync를 기다리는 파일(경로).
+    dirty: Vec<String>,
+    /// BatchGroup의 마지막 fsync 시각.
+    batch_started: Option<Instant>,
+    /// BatchGroup에서 모인 append 횟수.
+    pending_group: usize,
+    /// BatchGroup: fsync를 미룰 최대 시간.
+    pub batch_window: std::time::Duration,
+    /// BatchGroup: fsync 전에 모을 최대 append 횟수.
+    pub batch_max: usize,
 }
 
 impl Store {
@@ -315,6 +328,11 @@ impl Store {
                 known,
                 stats_self_suppressed: 0,
                 cas_retries: 0,
+                dirty: vec![],
+                batch_started: None,
+                pending_group: 0,
+                batch_window: std::time::Duration::from_millis(20),
+                batch_max: 256,
             },
             st,
             reconcile_events,
@@ -327,6 +345,26 @@ impl Store {
 
     pub fn known_card(&self, rel: &str) -> Option<&CardState> {
         self.known.get(rel)
+    }
+
+    /// 모아 둔 fsync를 지금 한다(종료·검사 전).
+    pub fn flush_sync(&mut self) -> Result<()> {
+        self.sync_touched()
+    }
+
+    fn sync_touched(&mut self) -> Result<()> {
+        if self.dirty.is_empty() {
+            self.batch_started = None;
+            self.pending_group = 0;
+            return Ok(());
+        }
+        let paths: Vec<String> = self.dirty.drain(..).collect();
+        for j in &paths {
+            self.file(j)?.sync_data()?;
+        }
+        self.batch_started = None;
+        self.pending_group = 0;
+        Ok(())
     }
 
     fn file(&mut self, j: &str) -> Result<&mut File> {
@@ -379,8 +417,31 @@ impl Store {
             self.next_seq += 1;
         }
         if self.fsync == Fsync::Batch {
+            // 묶음 안에서 건드린 일지만 fsync한다. 카드 1,000개 워크스페이스에서는 묶음마다
+            // 서로 다른 일지가 나오므로, 이건 사실상 "이벤트 1건 = fsync 1회"다.
+            // 처리량이 필요하면 BatchGroup을 쓴다(묶음을 여러 개 모아 한 번에 fsync).
             for j in &touched {
                 self.file(j)?.sync_data()?;
+            }
+        }
+        if self.fsync == Fsync::BatchGroup {
+            // 묶음 쓰기를 여러 번 모아 fsync 한 번으로 끝낸다. 승인(seq 응답)은 fsync 뒤에만
+            // 나가므로, 모인 사이의 append는 여기서 한꺼번에 확정된다.
+            for j in &touched {
+                if !self.dirty.contains(j) {
+                    self.dirty.push(j.clone());
+                }
+            }
+            self.pending_group += 1;
+            if self.batch_started.is_none() {
+                self.batch_started = Some(Instant::now());
+            }
+            let due = self
+                .batch_started
+                .map(|t| t.elapsed() >= self.batch_window)
+                .unwrap_or(true);
+            if due || self.pending_group >= self.batch_max {
+                self.sync_touched()?;
             }
         }
         // 색인 커밋
