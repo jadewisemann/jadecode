@@ -6,7 +6,7 @@
 - 무엇으로 만드는가: [`docs/architecture/`](docs/architecture/) (후보 비교, 스파이크 결과, 질문 목록)
 - 지금 어디까지: [`docs/implementation.md`](docs/implementation.md)
 
-서버 코어 · Claude Code 드라이버 · MCP 메시지 도구 · CLI까지 들어 있다. Mac 클라이언트(GPUI)는 다음 work다.
+서버 · 네 에이전트 백엔드(Claude Code·OpenCode·omp·pi) · MCP 메시지 도구 · CLI · **GPUI 데스크톱 클라이언트**까지 들어 있다.
 
 ## 빠르게
 
@@ -30,6 +30,9 @@ $J tail --limit 10
 $J permission list                   # 사람 답을 기다리는 권한 요청
 $J permission allow 42 "merge ok"    # 그 요청 승인
 $J check                             # 일지·색인 전수 대조
+
+jadecode-client                      # GPUI 창(서버가 떠 있어야 한다)
+jadecode-client --dump               # 창 없이 보드 스냅숏 JSON
 ```
 
 실제 Claude Code로 끝까지 돌려 보려면(구독 로그인 필요, 과금):
@@ -38,6 +41,8 @@ $J check                             # 일지·색인 전수 대조
 ./tools/e2e.sh haiku        # 카드 생성 → 워커 작업 → report(done) → 단계 이동
 ./tools/wake.sh haiku       # 워커 이벤트 → 오케스트레이터 다이제스트 → ack
 ./tools/full.sh haiku       # 사람 발주 → 오케스트레이터 → 카드·워커 → 보고 → 깨우기(전체)
+./tools/agents.sh           # 네 백엔드로 카드 하나씩(각 에이전트 로그인 필요)
+./tools/client.sh           # 클라이언트 스냅숏 + 창 생성 시험
 ./tools/crash-test.sh 12 100  # kill -9 반복 복구
 JADECODE_LIVE=1 cargo test -p jc-driver --test live -- --test-threads=1   # 드라이버 계약
 ```
@@ -46,11 +51,30 @@ JADECODE_LIVE=1 cargo test -p jc-driver --test live -- --test-threads=1   # 드�
 
 ```
 crates/jc-core      일지(정본)·색인(재생성 가능)·task.md·레이아웃·봇 스캐폴드
-crates/jc-driver    A2 드라이버: claude -p stream-json 상주, 격리, 재시작
+crates/jc-driver    에이전트 백엔드: claude stream-json · ACP(opencode·omp) · pi RPC
 crates/jc-mcp       인스턴스용 MCP 서버(report/ask/propose/error, ack/send/reply, permission RPC)
 crates/jc-server    JSON-RPC over WebSocket, 쓰기 스레드, 구독, 감시, 인스턴스·권한·깨우기
+crates/jc-client    GPUI 데스크톱 클라이언트(보드·카드·대화·봇)
 crates/jadecode-cli `jadecode` 바이너리
-tools/              e2e.sh · wake.sh · full.sh · crash-test.sh
+vendor/xattr        GPUI 빌드용 xattr 0.2 사본(최신 libc 호환 패치)
+tools/              e2e.sh · wake.sh · full.sh · agents.sh · client.sh · crash-test.sh
+```
+
+## 에이전트 백엔드
+
+봇 정의(`bots/<name>/bot.toml`)의 `agent` 칸이 고른다.
+
+| agent | 구동 | jadecode 도구 |
+|---|---|---|
+| `claude` | `claude -p` stream-json | MCP |
+| `opencode` | `opencode acp` | ACP MCP |
+| `omp` | `omp acp` | ACP MCP |
+| `pi` | `pi --mode rpc` | **확장(extension)** — pi는 MCP를 지원하지 않는다 |
+
+```sh
+jadecode agents                                  # 설치·버전·MCP 지원 확인
+jadecode bot add fast --agent omp --model deepseek/deepseek-v4-flash
+jadecode instance start fast --project api --card <카드> --agent omp
 ```
 
 워크스페이스 모양(파일이 정본이다):

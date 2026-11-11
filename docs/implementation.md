@@ -12,20 +12,23 @@
 | `jc-driver` | A2 드라이버: `claude -p` stream-json 상주, 격리 플래그, 화이트리스트 환경, interrupt, SIGTERM→SIGKILL(프로세스 그룹), 봇 spec·권한 정책 |
 | `jc-mcp` | 인스턴스용 MCP 서버(stdio): `report`/`ask`/`propose`/`error`/`read_card`, 오케스트레이터용 `ack`/`send`/`reply`/`escalate`/`read_event`, `permission` RPC |
 | `jc-server` | JSON-RPC 2.0 over WebSocket(Unix 0600 / 루프백 TCP), 단일 쓰기 스레드, 구독, `task.md` 감시, 인스턴스 관리자, 권한 게이트, 오케스트레이터 깨우기 |
-| `jadecode-cli` | `init` `project add` `card add/list/show/status/next` `server` `rpc` `rpc-stream` `tail` `check` `bot list` `instance list/start/send/stop` `permission list/allow/deny` `policy` `top` |
+| `jc-client` | **GPUI 데스크톱 클라이언트**: 보드(프로젝트별/전체 칸반), 카드 상세(경로 진행·메시지·task.md), 오케스트레이터 대화 + 권한 승인, 봇·인스턴스 화면. `--dump`로 창 없이 스냅숏 확인 |
+| `jadecode-cli` | `init` `project add` `card add/list/show/status/next` `server` `rpc` `rpc-stream` `tail` `check` `bot list/add` `agents` `instance list/start/send/stop` `permission list/allow/deny` `policy` `top` |
 
-테스트 69개(`cargo test`) + 실제 `claude`로 도는 live 계약 테스트 5개(`JADECODE_LIVE=1`, 기본 skip).
+테스트 95개(`cargo test`) + 실제 에이전트로 도는 시험 스크립트 5종.
 
 실측(2026-11-11, 이 컨테이너):
 
 | 시험 | 결과 |
 |---|---|
-| `cargo test` | 69 통과 |
+| `cargo test` | 95 통과 |
 | `tools/crash-test.sh 12 100` | `kill -9` 12회 × 100건 = 303줄, `check` 어긋남 0 |
 | `tools/e2e.sh haiku` | 워커가 `greet.sh` 생성+실행권한, `report(done)`, 카드 상태 `waiting_human`, 단계 `implement→verify`, `check` ok |
 | `tools/wake.sh haiku` | 깨우기 다이제스트 1건, 오케스트레이터 `ack(upto=이벤트 seq)`, `ok: true` |
 | `tools/full.sh haiku` | 사람 발주 → 오케스트레이터가 카드 생성·워커 발주 → 워커가 `hello.txt` 작성·`report(done)` → 오케스트레이터 깨우기·`ack(27)` → `check` ok. 이벤트 38건 |
 | live 계약(드라이버) | 두 턴 같은 프로세스, 세션 id 고정, `--resume` 이력 유지, 턴별 사용량, 사용자 MCP 격리 통과 |
+| `tools/agents.sh` | **claude·opencode·omp·pi 네 백엔드 모두** 카드 하나를 파일 생성 + `report(done)`까지 완료(2026-11-11) |
+| `tools/client.sh` | 스냅숏(프로젝트 1·카드 5·메시지 183·head 429) + 1280x820 창 생성 확인 |
 
 ## 아키텍처 문서 → 코드 대응
 
@@ -43,6 +46,8 @@
 | S2 권한 무인 실행 | `crates/jc-server/src/instances.rs`, `permission.request` | 25분 상한, 장애 시 도구 오류, MCP 미연결이면 재시작 |
 | S3 메시지·깨우기 | `jc-mcp/src/tools.rs`, `Manager::wake_loop` | 다이제스트 0.3초 모으기, ack, 자동 보고는 깨우지 않음 |
 | C1 봇 = 폴더 | `jc-core/src/scaffold.rs`, `jc-driver/src/spec.rs` | 봇 4개 기본, 정책은 `policy/`(봇 밖) |
+| 다중 에이전트(R2) | `jc-driver/src/agent.rs`, `acp.rs`, `pi.rs` | claude·opencode·omp·pi. ACP 2개, pi 확장 |
+| ④ D1 Mac GPUI | `jc-client/src/{board,format,ui}.rs` | 명세 첫 화면 5가지 |
 
 ### 스파이크가 정한 규칙 중 코드가 지키는 것
 
@@ -55,13 +60,37 @@
 - `--setting-sources "" --strict-mcp-config` + 화이트리스트 환경으로 사용자 전역 지침·훅·커넥터 MCP를 뺀다.
 - `mcp__jadecode*`와 `ToolSearch`는 기본 허용(안 하면 도구 호출마다 사람 승인이 필요해 턴이 멈춘다 — 구현 중 발견).
 
+## 에이전트 백엔드 (실측 2026-11-11)
+
+| 에이전트 | 구동 | 구조화 출력 | jadecode 도구 | 파일 쓰기 | 확인 |
+|---|---|---|---|---|---|
+| Claude Code 2.1.322 | `claude -p --input-format stream-json` | stream-json | MCP(stdio) | 에이전트 자기 도구 | 통과 |
+| OpenCode 2.1.1 | `opencode acp` | ACP | ACP `mcpServers` | **클라이언트 fs** | 통과 |
+| omp 18.12.2 | `omp acp` | ACP | ACP `mcpServers` | **클라이언트 fs** | 통과 |
+| pi 0.73.1 | `pi --mode rpc` | 자체 JSONL | **없음 → 확장(extension)** | 에이전트 자기 도구 | 통과 |
+
+- ACP는 에이전트가 파일을 직접 만지지 않는다. `fs/read_text_file`·`fs/write_text_file`을 클라이언트가 처리하므로 **카드 폴더·워크트리 밖 쓰기는 서버가 거부**한다(`acp::in_scope`).
+- ACP 권한은 `session/request_permission`으로 온다. 사람/정책 답을 `optionId`(allow_once/reject_once)로 돌려준다.
+- pi에는 MCP가 없다("does not include built-in MCP"). 그래서 `pi.registerTool()` 확장 파일을 생성해 `jadecode_report`/`ask`/`propose`/`read_card`를 주입하고, 도구 구현은 `jadecode rpc` CLI를 부른다(절대 경로 + `--socket`).
+- 인증 환경변수(`ANTHROPIC_API_KEY`·`OPENAI_API_KEY`·`DEEPSEEK_API_KEY` 등)만 자식에 넘긴다. `CLAUDECODE*`는 계속 차단한다.
+- 봇의 `agent` 칸이 백엔드를 고른다. `instance.start --agent`로 덮어쓸 수 있다. `jadecode agents`가 설치·버전·MCP 지원을 보여 준다.
+
+## 클라이언트 (GPUI)
+
+- `jc-client`: 데이터 계층(`Board`)과 화면(`ui`)을 나눴다. 데이터 계층은 WebSocket JSON-RPC로 붙고, 이벤트 구독으로 스냅숏을 갱신한다.
+- 화면: 보드(프로젝트 선택 + 단계 열), 카드(경로 진행·인스턴스·메시지·task.md), 대화(권한 승인 버튼 포함), 봇/인스턴스.
+- 쓰기 동작은 별도 스레드·별도 연결로 실행한다(GPUI 실행기와 tokio를 섞지 않는다).
+- `jadecode-client --dump`는 창 없이 스냅숏을 JSON으로 낸다(CI·헤드리스 시험용).
+- **이 컨테이너에서는 창이 검게 나온다**: Vulkan 드라이버가 없어(`/dev/dri` 없음) 렌더 결과가 화면에 오지 않는다. GPUI 최소 예제도 같다. 창 생성·데이터 바인딩은 확인했고, 실제 픽셀 확인은 Mac(또는 GPU 있는 리눅스)에서 해야 한다.
+- GPUI 0.2.2가 끌어오는 `zed-async-tar`가 `xattr 0.2`를 고정하는데 그 판이 최신 libc(aarch64)에서 `libc::ENOATTR`로 깨진다 → `vendor/xattr`에 상수만 고친 사본을 두고 `[patch.crates-io]`로 쓴다.
+
 ## 명세 대비 남은 것
 
 - **단계 종료 조건·경로 검사·사람 절차 강제** — 지금 `card.advance`는 경로만 따라간다. 종료 조건(명령 검사·봇 판정·사람 승인)과 `policy`의 사람 절차 검사는 다음 단계.
 - **워크트리 생성** — `card add --repo r=branch`는 앞머리에 적고 `--add-dir`로 이미 있는 폴더를 연다. `git worktree add`는 아직 안 부른다(레포 경로 설정 필요).
 - **종료 조건 기반 단계 이동** — `card_advance`는 지금 경로만 따라간다. 명령 검사·리뷰 봇 판정·사람 승인을 붙이는 것이 다음.
 - **봇 버전 관리(git 커밋)·자기개선(RSI)** — 사용자가 범위에서 뺐다. 봇은 폴더 + 기억(`memory/`)까지만.
-- **Mac 클라이언트(GPUI)** — berth 데스크톱 코드를 출발점으로. 별도 work.
+- **클라이언트 마감** — 한국어 IME 입력(지금은 표시만), 마크다운 렌더, diff 뷰, 터미널 붙기. berth 데스크톱 코드를 참고.
 - **원격(Tailscale)** — 첫 버전 범위 밖.
 - **터미널로 넘기기(사람 붙기)** — 대화 화면(이벤트 그리기)이 첫 버전, PTY 넘기기는 2차.
 
