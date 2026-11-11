@@ -1,0 +1,178 @@
+name: Release
+
+# 태그(v0.1.0 등)를 밀면 바이너리를 만들어 GitHub Release에 붙인다.
+# 손으로 돌릴 때는 Actions 탭에서 tag를 입력한다.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "릴리즈 태그 (예: v0.1.0-alpha)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------- Linux ----------
+  linux-x86_64:
+    name: linux-x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux
+      - name: 시스템 라이브러리
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libfontconfig1-dev libfreetype-dev libvulkan-dev libx11-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxcb-randr0-dev libxcb-xkb-dev libssl-dev pkg-config
+      - name: build
+        run: cargo build --release --workspace --bins
+      - name: package
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DIR="jadecode-${TAG}-linux-x86_64"
+          mkdir -p "$DIR"
+          cp target/release/jadecode target/release/jadecode-mcp \
+             target/release/jadecode-client target/release/jc-bench "$DIR"/
+          cp README.md SPEC.md "$DIR"/
+          cp -r docs "$DIR"/
+          cat > "$DIR/install.sh" <<'EOF'
+          #!/bin/sh
+          # jadecode 설치: 바이너리를 ~/.local/bin 에 둔다.
+          set -eu
+          HERE=$(cd "$(dirname "$0")" && pwd)
+          DEST="${JADECODE_PREFIX:-$HOME/.local/bin}"
+          mkdir -p "$DEST"
+          for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+            cp "$HERE/$b" "$DEST/$b"
+            chmod +x "$DEST/$b"
+            echo "installed $DEST/$b"
+          done
+          echo
+          echo "다음: jadecode init ~/jc/work && cd ~/jc/work && jadecode server"
+          EOF
+          chmod +x "$DIR/install.sh"
+          # 실행에 필요한 공유 라이브러리 목록을 남긴다(배포판마다 이름이 다르다).
+          ldd target/release/jadecode-client | awk '{print $1}' | sort -u > "$DIR/REQUIRES.txt" || true
+          tar -czf "${DIR}.tar.gz" "$DIR"
+          sha256sum "${DIR}.tar.gz" > "${DIR}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            jadecode-*.tar.gz
+            jadecode-*.tar.gz.sha256
+
+  # ---------- macOS (Apple Silicon) ----------
+  macos-aarch64:
+    name: macos-aarch64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos
+      - name: build
+        run: cargo build --release --workspace --bins
+      - name: package
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DIR="jadecode-${TAG}-macos-aarch64"
+          mkdir -p "$DIR"
+          cp target/release/jadecode target/release/jadecode-mcp \
+             target/release/jadecode-client target/release/jc-bench "$DIR"/
+          cp README.md SPEC.md "$DIR"/
+          cp -r docs "$DIR"/
+          cat > "$DIR/install.sh" <<'EOF'
+          #!/bin/sh
+          set -eu
+          HERE=$(cd "$(dirname "$0")" && pwd)
+          DEST="${JADECODE_PREFIX:-$HOME/.local/bin}"
+          mkdir -p "$DEST"
+          for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+            cp "$HERE/$b" "$DEST/$b"
+            chmod +x "$DEST/$b"
+            echo "installed $DEST/$b"
+          done
+          echo
+          echo "다음: jadecode init ~/jc/work && cd ~/jc/work && jadecode server"
+          echo "클라이언트: jadecode-client  (서버가 떠 있어야 한다)"
+          EOF
+          chmod +x "$DIR/install.sh"
+          tar -czf "${DIR}.tar.gz" "$DIR"
+          shasum -a 256 "${DIR}.tar.gz" > "${DIR}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: |
+            jadecode-*.tar.gz
+            jadecode-*.tar.gz.sha256
+
+  # ---------- Release ----------
+  publish:
+    name: publish release
+    needs: [linux-x86_64, macos-aarch64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 목록 확인
+        run: ls -la dist
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: jadecode ${{ github.event.inputs.tag || github.ref_name }}
+          draft: true
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, 'alpha') || contains(github.event.inputs.tag || github.ref_name, 'beta') || contains(github.event.inputs.tag || github.ref_name, 'rc') }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          body: |
+            ## 설치
+
+            ```sh
+            # 아카이브를 풀고
+            tar -xzf jadecode-*-<플랫폼>.tar.gz
+            cd jadecode-*-<플랫폼>
+            ./install.sh            # ~/.local/bin 에 설치
+            ```
+
+            ## 첫 실행
+
+            ```sh
+            jadecode init ~/jc/work --name Work
+            cd ~/jc/work
+            export JADECODE_MCP=$(command -v jadecode-mcp)
+            jadecode server &                 # 유닉스 소켓 .jadecode/jadecode.sock
+            jadecode project add api
+            jadecode card add "첫 카드" --project api --path implement,verify
+            jadecode agents                   # claude·opencode·omp·pi 설치 확인
+            jadecode-client                   # 데스크톱 보드
+            ```
+
+            ## 요구 사항
+
+            - **에이전트**: `claude`, `opencode`, `omp`, `pi` 중 설치된 것(각자 로그인/API 키)
+            - **리눅스 클라이언트**: X11 또는 Wayland + Vulkan 드라이버. `REQUIRES.txt`(리눅스 아카이브)에
+              필요한 공유 라이브러리를 적어 두었다.
+            - **macOS 클라이언트**: 14 이상(Apple Silicon 빌드)

@@ -28,7 +28,16 @@ jc-mcp = { path = "crates/jc-mcp" }
 jc-client = { path = "crates/jc-client" }
 
 [profile.release]
+# 배포 바이너리를 가볍게. 스택 트레이스가 필요하면 `--profile release-debug`를 쓴다.
+debug = 0
+strip = "symbols"
+lto = "thin"
+codegen-units = 4
+
+[profile.release-debug]
+inherits = "release"
 debug = 1
+strip = "none"
 
 # GPUI가 끌어오는 zed-async-tar 0.5.0-zed 는 xattr 0.2 를 고정하는데,
 # 그 판이 최신 libc(aarch64 linux)에서 `libc::ENOATTR`를 못 찾아 빌드가 깨진다.
