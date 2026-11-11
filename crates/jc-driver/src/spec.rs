@@ -36,6 +36,9 @@ pub struct BotSpec {
     /// 허용할 내장 스킬(나머지는 deny).
     #[serde(default)]
     pub allowed_skills: Vec<String>,
+    /// 실행 파일 경로(비우면 백엔드 기본값을 PATH에서 찾는다).
+    #[serde(default)]
+    pub bin: Option<String>,
 }
 
 fn default_agent() -> String {
@@ -49,14 +52,29 @@ fn default_policy() -> String {
 }
 
 impl BotSpec {
+    /// 재시작 설정을 만들 때 채우는 빈 값.
+    pub fn placeholder() -> Self {
+        Self {
+            name: String::new(),
+            title: String::new(),
+            agent: "claude".into(),
+            model: None,
+            instructions: "instructions.md".into(),
+            skills: None,
+            memory: None,
+            policy: "default".into(),
+            add_dirs: vec![],
+            allowed_skills: vec![],
+            bin: None,
+        }
+    }
+
     pub fn load(dir: &Path) -> Result<Self> {
         let p = dir.join("bot.toml");
         let text = std::fs::read_to_string(&p)
             .with_context(|| format!("bot.toml 없음: {}", p.display()))?;
         let spec: BotSpec = toml::from_str(&text).with_context(|| format!("parse {}", p.display()))?;
-        if spec.agent != "claude" {
-            bail!("first version supports agent=claude only (got {})", spec.agent);
-        }
+        // 어떤 에이전트인지는 호출자가 `AgentKind::parse`로 확인한다(넷 다 지원).
         Ok(spec)
     }
 
@@ -238,5 +256,86 @@ mod tests {
         let deny = j["permissions"]["deny"].as_array().unwrap();
         assert!(!deny.iter().any(|x| x.as_str().unwrap() == "Skill(review)"));
         assert!(deny.iter().any(|x| x.as_str().unwrap() == "Skill(init)"));
+    }
+}
+
+/// ACP `session/new`의 `mcpServers` 항목(jadecode MCP 서버 하나).
+pub fn isolation_mcp_servers(
+    socket: &std::path::Path,
+    instance: &str,
+    card: &Option<String>,
+    project: &str,
+) -> serde_json::Value {
+    // ACP는 stdio MCP를 `{name, command, args, env:[]}`로 받는다(실측).
+    let mut args = vec![
+        "--socket".to_string(),
+        socket.display().to_string(),
+        "--role".to_string(),
+        if card.is_none() { "orchestrator".to_string() } else { "worker".to_string() },
+        "--instance".to_string(),
+        instance.to_string(),
+        "--project".to_string(),
+        project.to_string(),
+    ];
+    if let Some(c) = card {
+        args.push("--card".to_string());
+        args.push(c.clone());
+    }
+    serde_json::json!([{
+        "name": "jadecode",
+        "command": mcp_command(),
+        "args": args,
+        "env": [],
+    }])
+}
+
+/// MCP 서버 실행 파일: 환경변수 → 실행 파일 옆 → PATH.
+pub fn mcp_command() -> String {
+    if let Some(p) = std::env::var_os("JADECODE_MCP") {
+        return p.to_string_lossy().to_string();
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let sib = exe.with_file_name("jadecode-mcp");
+        if sib.exists() {
+            return sib.to_string_lossy().to_string();
+        }
+    }
+    "jadecode-mcp".to_string()
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::*;
+
+    #[test]
+    fn worker_mcp_entry_has_card() {
+        let v = isolation_mcp_servers(
+            std::path::Path::new("/tmp/s.sock"),
+            "w-1",
+            &Some("work/p/c".to_string()),
+            "p",
+        );
+        assert_eq!(v[0]["name"], "jadecode");
+        let args: Vec<String> = v[0]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert!(args.contains(&"--card".to_string()));
+        assert!(args.contains(&"worker".to_string()));
+    }
+
+    #[test]
+    fn orchestrator_has_no_card() {
+        let v = isolation_mcp_servers(std::path::Path::new("/tmp/s.sock"), "o-1", &None, "p");
+        let args: Vec<String> = v[0]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert!(args.contains(&"orchestrator".to_string()));
+        assert!(!args.contains(&"--card".to_string()));
     }
 }

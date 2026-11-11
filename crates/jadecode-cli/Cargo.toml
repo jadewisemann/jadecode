@@ -16,3 +16,4 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 jc-core.workspace = true
 jc-server.workspace = true
+jc-driver.workspace = true

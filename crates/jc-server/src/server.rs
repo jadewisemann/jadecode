@@ -61,6 +61,8 @@ pub struct Shared {
     pub started: Instant,
     pub sent: AtomicU64,
     pub instances: crate::instances::InstanceManager,
+    /// 백엔드별 실행 파일 경로(설정에서 온 것).
+    pub agent_bins: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
 }
 
 impl Shared {
@@ -90,6 +92,8 @@ pub struct ServerConfig {
     pub claude_bin: Option<String>,
     /// 오케스트레이터 깨우기 모으기 간격.
     pub wake_interval: Duration,
+    /// 백엔드별 실행 파일 경로(`jadecode.toml`의 `[agents]`).
+    pub bins: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for ServerConfig {
@@ -102,6 +106,7 @@ impl Default for ServerConfig {
             mcp_bin: None,
             claude_bin: None,
             wake_interval: Duration::from_millis(300),
+            bins: Default::default(),
         }
     }
 }
@@ -369,6 +374,7 @@ where
         started: t0,
         sent: AtomicU64::new(0),
         instances,
+        agent_bins: std::sync::Mutex::new(config.bins.clone()),
     });
 
     match bound {
@@ -693,6 +699,13 @@ where
             Method::BotsList => {
                 let sh2 = sh.clone();
                 let resp = bots_list(&sh2).map(|v| rpc::ok(&id, v)).unwrap_or_else(|e| rpc::err(&id, e));
+                let _ = out.send(resp).await;
+            }
+            Method::AgentsList => {
+                let sh2 = sh.clone();
+                let resp = agents_list(&sh2)
+                    .map(|v| rpc::ok(&id, v))
+                    .unwrap_or_else(|e| rpc::err(&id, e));
                 let _ = out.send(resp).await;
             }
             Method::PolicyGet => {
@@ -1130,6 +1143,7 @@ async fn instance_start(sh: Arc<Shared>, params: &Value) -> Result<Value, Error>
         crate::instances::Role::Orchestrator => None,
     };
     let model = params.get("model").and_then(|v| v.as_str()).map(String::from);
+    let agent_override = params.get("agent").and_then(|v| v.as_str());
     let id = params
         .get("id")
         .and_then(|v| v.as_str())
@@ -1141,8 +1155,12 @@ async fn instance_start(sh: Arc<Shared>, params: &Value) -> Result<Value, Error>
             };
             format!("{tag}-{}", jc_core::ulid::new_id().to_lowercase())
         });
-    let spec = crate::instances::build_spec(&sh.root, id, role, project, card, &bot, model)
-    .map_err(|e| Error::invalid_params(e.to_string()))?;
+    let mut spec = crate::instances::build_spec(&sh.root, id, role, project, card, &bot, model)
+        .map_err(|e| Error::invalid_params(e.to_string()))?;
+    if let Some(a) = agent_override {
+        spec.agent = jc_driver::AgentKind::parse(a)
+            .map_err(|e| Error::invalid_params(e.to_string()))?;
+    }
     let info = sh
         .instances
         .start(spec)
@@ -1394,4 +1412,17 @@ async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
         )])
         .await?;
     Ok(json!({"path": rel, "slug": slug, "seqs": seqs}))
+}
+
+/// `agents.list` — 지원 백엔드와 설치 여부.
+fn agents_list(sh: &Shared) -> Result<Value, Error> {
+    let bins = sh.agent_bins.lock().unwrap().clone();
+    let rows: Vec<Value> = jc_driver::AgentKind::all()
+        .iter()
+        .map(|k| {
+            let explicit = bins.get(k.as_str()).map(|s| s.as_str());
+            jc_driver::any::probe(*k, explicit)
+        })
+        .collect();
+    Ok(json!({"agents": rows, "default": "claude"}))
 }

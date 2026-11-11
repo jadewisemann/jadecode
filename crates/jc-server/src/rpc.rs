@@ -91,6 +91,7 @@ pub enum Method {
     PermissionRequest,
     PermissionResolve,
     BotsList,
+    AgentsList,
     PolicyGet,
 }
 
@@ -118,6 +119,7 @@ impl Method {
             "permission.request" => Method::PermissionRequest,
             "permission.resolve" => Method::PermissionResolve,
             "bots.list" => Method::BotsList,
+            "agents.list" => Method::AgentsList,
             "policy.get" => Method::PolicyGet,
             _ => return None,
         })
@@ -146,6 +148,7 @@ impl Method {
             "permission.request",
             "permission.resolve",
             "bots.list",
+            "agents.list",
             "policy.get",
         ]
     }

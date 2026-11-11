@@ -11,7 +11,9 @@ use anyhow::{Context, Result};
 use jc_core::index;
 use jc_core::topic::card_topic;
 use jc_core::NewEvent;
-use jc_driver::proc::{instance_dir, Driver, DriverConfig};
+use jc_driver::acp::AcpPermission;
+use jc_driver::any::{AgentDriver, SpawnHooks};
+use jc_driver::proc::{instance_dir, DriverConfig};
 use jc_driver::spec::{BotSpec, PermissionPolicy};
 use jc_driver::stream::DriverEvent;
 use jc_driver::stream::AssistantBlock;
@@ -64,6 +66,13 @@ pub struct InstanceSpec {
     pub auto_allow: Vec<String>,
     /// 사람 답을 기다리는 상한(분). CLI 무응답 중단(1800초)보다 짧아야 한다.
     pub permission_timeout_min: u64,
+    /// 어느 에이전트로 돌릴지(봇 정의가 정한다).
+    pub agent: jc_driver::AgentKind,
+    /// 실행 파일 경로(없으면 PATH).
+    pub bin: Option<String>,
+    /// 재시작 때 다시 쓰는 설정(비어 있으면 task가 채운다).
+    pub driver_config: DriverConfig,
+    pub hooks: SpawnHooks,
 }
 
 impl InstanceSpec {
@@ -85,6 +94,7 @@ pub struct InstanceInfo {
     pub project: String,
     pub card: Option<String>,
     pub bot: String,
+    pub agent: String,
     pub model: Option<String>,
     pub session_id: String,
     pub pid: u32,
@@ -426,7 +436,7 @@ impl Manager {
         v
     }
 
-    async fn start(&mut self, spec: InstanceSpec) -> Result<InstanceInfo> {
+    async fn start(&mut self, mut spec: InstanceSpec) -> Result<InstanceInfo> {
         if self.live.contains_key(&spec.id) {
             anyhow::bail!("instance exists: {}", spec.id);
         }
@@ -458,21 +468,39 @@ impl Manager {
             mcp_env: BTreeMap::new(),
             add_dirs: spec.add_dirs.clone(),
             resume: false,
-            claude_bin: self.claude_bin.clone(),
+            bin: spec.bin.clone().or_else(|| {
+                if spec.agent == jc_driver::AgentKind::Claude {
+                    Some(self.claude_bin.clone())
+                } else {
+                    None
+                }
+            }),
             state_dir: Some(dir.clone()),
             max_turns: None,
             extra_args: vec![],
+            agent: spec.agent,
+            socket: self.socket.clone(),
+            instance_id: spec.id.clone(),
+            project: spec.project.clone(),
+            card: spec.card.clone(),
+            workspace: self.root.clone(),
         };
-        let driver = Driver::spawn(cfg).await?;
+        // ACP·Pi는 클라이언트 콜백이 필요하다(권한·파일 쓰기).
+        let hooks = self.hooks_for(&spec);
+        let driver = AgentDriver::spawn(cfg.clone(), hooks.clone()).await?;
+        // 재시작 때 같은 설정·콜백을 다시 쓴다.
+        spec.driver_config = cfg;
+        spec.hooks = hooks;
         let info = Arc::new(Mutex::new(InstanceInfo {
             id: spec.id.clone(),
             role: spec.role.as_str().into(),
             project: spec.project.clone(),
             card: spec.card.clone(),
             bot: spec.bot.name.clone(),
+            agent: spec.agent.as_str().into(),
             model: spec.bot.model.clone(),
             session_id: spec.session_id.clone(),
-            pid: driver.pid,
+            pid: driver.pid(),
             state: "starting".into(),
             turns: 0,
             started_ms: jc_core::event::now_ms(),
@@ -496,7 +524,9 @@ impl Manager {
                     "bot": spec.bot.name,
                     "bot_model": spec.bot.model,
                     "session_id": spec.session_id,
-                    "pid": driver.pid,
+                    "pid": driver.pid(),
+                    "agent": spec.agent.as_str(),
+                    "protocol": spec.agent.protocol().as_str(),
                     "cwd": spec.cwd_label(),
                     "card": spec.card,
                     "policy": spec.policy.default_mode,
@@ -510,6 +540,80 @@ impl Manager {
         let spec2 = spec.clone();
         tokio::spawn(run_instance(spec2, driver, rx, info, store_cmd, root, started_seq));
         Ok(self.live.get(&spec.id).unwrap().info.lock().unwrap().clone())
+    }
+
+    /// ACP·Pi 백엔드에 넘길 콜백(권한·파일 쓰기).
+    fn hooks_for(&self, spec: &InstanceSpec) -> SpawnHooks {
+        let info = InstanceInfo {
+            id: spec.id.clone(),
+            role: spec.role.as_str().into(),
+            project: spec.project.clone(),
+            card: spec.card.clone(),
+            bot: spec.bot.name.clone(),
+            agent: spec.agent.as_str().into(),
+            model: spec.bot.model.clone(),
+            session_id: spec.session_id.clone(),
+            pid: 0,
+            state: "starting".into(),
+            turns: 0,
+            started_ms: jc_core::event::now_ms(),
+            last_report: None,
+        };
+        let root = self.root.clone();
+        let store_cmd = self.store_cmd.clone();
+        let pending = self.pending_perms.clone();
+        let timeout_min = self.permission_timeout_for(&info);
+        let perm: Arc<dyn Fn(AcpPermission) -> oneshot::Receiver<(bool, String)> + Send + Sync> =
+            Arc::new(move |p: AcpPermission| {
+                let (tx, rx) = oneshot::channel();
+                let root = root.clone();
+                let store_cmd = store_cmd.clone();
+                let pending = pending.clone();
+                let info = info.clone();
+                let input = serde_json::json!({
+                    "title": p.title,
+                    "kind": p.tool_kind,
+                    "toolCall": p.tool_call,
+                });
+                tokio::spawn(async move {
+                    let d = decide_permission_task(
+                        root,
+                        store_cmd,
+                        pending,
+                        vec![info.clone()],
+                        info.id.clone(),
+                        p.tool_kind.clone(),
+                        input,
+                        p.tool_call
+                            .get("toolCallId")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        timeout_min,
+                    )
+                    .await;
+                    let _ = tx.send((d.allow, d.message));
+                });
+                rx
+            });
+        let store_cmd2 = self.store_cmd.clone();
+        let topic = spec.journal_topic();
+        let inst = spec.id.clone();
+        let on_file: Arc<dyn Fn(&str, bool) + Send + Sync> = Arc::new(move |path: &str, ok: bool| {
+            let (tx, _rx) = oneshot::channel();
+            let _ = store_cmd2.try_send(crate::server::Cmd::Append {
+                events: vec![NewEvent::new(
+                    topic.clone(),
+                    "instance.file_written",
+                    serde_json::json!({"instance": inst, "path": path, "ok": ok}),
+                )],
+                reply: tx,
+            });
+        });
+        SpawnHooks {
+            permission: Some(perm),
+            on_file: Some(on_file),
+        }
     }
 
     fn permission_timeout_for(&self, _info: &InstanceInfo) -> u64 {
@@ -699,7 +803,7 @@ fn set_info(info: &Mutex<InstanceInfo>, f: impl FnOnce(&mut InstanceInfo)) {
 /// 인스턴스 하나의 실행 루프. 프로세스가 죽으면 같은 폴더에서 `--resume`으로 이어 붙인다.
 async fn run_instance(
     spec: InstanceSpec,
-    mut driver: Driver,
+    mut driver: AgentDriver,
     mut rx: mpsc::Receiver<InstMsg>,
     info: Arc<Mutex<InstanceInfo>>,
     store_cmd: mpsc::Sender<crate::server::Cmd>,
@@ -788,17 +892,17 @@ async fn run_instance(
                         // claude가 한가할 때 stdin이 닫히면 정상 종료다. 아니면 다시 띄운다.
                         restarts += 1;
                         if restarts > 5 { break; }
-                        let mut cfg_driver = driver.config.clone();
+                        let mut cfg_driver = spec.driver_config.clone();
                         cfg_driver.resume = true;
-                        match Driver::spawn(cfg_driver).await {
+                        match AgentDriver::spawn(cfg_driver, spec.hooks.clone()).await {
                             Ok(d) => {
                                 driver = d;
                                 set_info(&info, |i| {
                                     i.state = "starting".into();
-                                    i.pid = driver.pid;
+                                    i.pid = driver.pid();
                                 });
                                 emit(&store_cmd, vec![NewEvent::new(topic.clone(), "instance.restarted",
-                                    json!({"instance":spec.id,"resume":true,"attempt":restarts,"pid":driver.pid}))]);
+                                    json!({"instance":spec.id,"resume":true,"attempt":restarts,"pid":driver.pid()}))]);
                                 // 재시작 전에 밀린 지시가 있으면 한 번 넣는다.
                                 let pending = format!(
                                     "[jadecode] 이전 프로세스가 끝나 같은 세션으로 다시 이어 붙였다. 카드 `{}` 작업을 이어서 하라. 진행 상황을 `report`로 남겨라.",
@@ -819,7 +923,12 @@ async fn run_instance(
                         match &ev {
                             DriverEvent::Init { session_id, mcp_servers, model, .. } => {
                                 let jc = mcp_servers.iter().find(|m| m.name == "jadecode");
-                                let connected = jc.map(|m| m.status == "connected").unwrap_or(false);
+                                // MCP를 쓰지 않는 백엔드(pi)는 "미연결"이 정상이다.
+                                let connected = if !spec.agent.supports_mcp() {
+                                    true
+                                } else {
+                                    jc.map(|m| m.status == "connected").unwrap_or(false)
+                                };
                                 let model2 = model.clone();
                                 set_info(&info, |i| {
                                     i.state = "idle".into();
@@ -836,13 +945,13 @@ async fn run_instance(
                                     emit(&store_cmd, vec![NewEvent::new(topic.clone(), "instance.mcp_missing",
                                         json!({"instance":spec.id,"servers":mcp_servers}))]);
                                     stopping = false;
-                                    let mut cfg_driver = driver.config.clone();
+                                    let mut cfg_driver = spec.driver_config.clone();
                                     cfg_driver.resume = true;
                                     restarts += 1;
                                     if restarts <= 5 {
-                                        if let Ok(d) = Driver::spawn(cfg_driver).await {
+                                        if let Ok(d) = AgentDriver::spawn(cfg_driver, spec.hooks.clone()).await {
                                             driver = d;
-                                            let pid = driver.pid;
+                                            let pid = driver.pid();
                                             set_info(&info, |i| i.pid = pid);
                                         } else { break; }
                                     } else { break; }
@@ -991,6 +1100,8 @@ pub fn build_spec(
     if let Some(m) = model_override {
         bot.model = Some(m);
     }
+    let agent = jc_driver::AgentKind::parse(&bot.agent)?;
+    let bot_bin = bot.bin.clone();
     let policy = PermissionPolicy::load(root, &bot.policy)?;
     let cwd = match &card {
         Some(c) => root.join(c),
@@ -1033,6 +1144,31 @@ pub fn build_spec(
         add_dirs,
         auto_allow: vec![],
         permission_timeout_min: 25,
+        agent,
+        bin: bot_bin.clone(),
+        driver_config: DriverConfig {
+            cwd: PathBuf::new(),
+            session_id: String::new(),
+            bot_dir: PathBuf::new(),
+            bot: BotSpec::placeholder(),
+            policy: PermissionPolicy::default(),
+            mcp_command: String::new(),
+            mcp_args: vec![],
+            mcp_env: std::collections::BTreeMap::new(),
+            add_dirs: vec![],
+            resume: false,
+            bin: None,
+            state_dir: None,
+            max_turns: None,
+            extra_args: vec![],
+            agent,
+            socket: PathBuf::new(),
+            instance_id: String::new(),
+            project: String::new(),
+            card: None,
+            workspace: PathBuf::new(),
+        },
+        hooks: SpawnHooks::default(),
     })
 }
 

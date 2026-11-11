@@ -338,6 +338,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "jc-core",
+ "jc-driver",
  "jc-server",
  "serde_json",
  "tokio",

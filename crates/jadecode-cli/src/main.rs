@@ -40,6 +40,9 @@ fn usage() -> &'static str {
   rpc <method> [json]                    서버에 JSON-RPC 한 번
   rpc-stream                             stdin의 JSON-RPC 줄을 한 연결로 보낸다
   bot list                               봇 목록
+  bot add <name> --agent <a> [--model <m>]
+                                         봇 추가(claude|opencode|omp|pi)
+  agents                                 지원 에이전트와 설치 여부
   instance list                          인스턴스 목록
   instance start <bot> --project <p>     인스턴스 띄우기
        [--card <card>] [--role worker|orchestrator] [--model <m>]
@@ -281,15 +284,62 @@ fn main() -> Result<()> {
         Some("bot") => {
             let ws = open_ws()?;
             let sock = socket_path(&ws, &args);
+            if args.get(1).map(|s| s.as_str()) == Some("add") {
+                let name = args.get(2).context("bot add <name> --agent <a>")?;
+                let agent = flag_value(&args, "--agent").context("--agent claude|opencode|omp|pi")?;
+                jc_driver::AgentKind::parse(&agent)?;
+                let model = flag_value(&args, "--model");
+                let dir = ws.root.join("bots").join(name);
+                if dir.exists() {
+                    bail!("bot exists: {name}");
+                }
+                std::fs::create_dir_all(dir.join("memory"))?;
+                let mut toml = format!(
+                    "name = \"{name}\"\ntitle = \"{name}\"\nagent = \"{agent}\"\n",
+                );
+                if let Some(m) = &model {
+                    toml.push_str(&format!("model = \"{m}\"\n"));
+                }
+                toml.push_str("instructions = \"instructions.md\"\npolicy = \"default\"\nallowed_skills = []\n");
+                std::fs::write(dir.join("bot.toml"), toml)?;
+                std::fs::write(
+                    dir.join("instructions.md"),
+                    format!("# {name}\n\n너는 jadecode의 {name} 봇이다.\n\n- 카드 폴더의 task.md를 읽고 단계 목표를 수행한다.\n- 끝나면 report(status=done|progress|blocked, summary)를 부른다.\n- 사람 승인이 필요한 일은 propose로 올린다.\n"),
+                )?;
+                println!("{}", dir.display());
+                return Ok(());
+            }
             let out = rt().block_on(rpc_call(&sock, "bots.list", json!({})))?;
             for b in out["bots"].as_array().cloned().unwrap_or_default() {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
                     b["name"].as_str().unwrap_or(""),
+                    b["agent"].as_str().unwrap_or(""),
                     b["title"].as_str().unwrap_or(""),
                     b["model"].as_str().unwrap_or("-"),
                     b["policy"].as_str().unwrap_or(""),
                     b["error"].as_str().unwrap_or(""),
+                );
+            }
+            Ok(())
+        }
+        Some("agents") => {
+            let ws = open_ws()?;
+            let sock = socket_path(&ws, &args);
+            let out = rt().block_on(rpc_call(&sock, "agents.list", json!({})))?;
+            println!(
+                "{:<10} {:<20} {:<8} {:<8} {:<10} {}",
+                "agent", "protocol", "ready", "mcp", "client-fs", "version"
+            );
+            for a in out["agents"].as_array().cloned().unwrap_or_default() {
+                println!(
+                    "{:<10} {:<20} {:<8} {:<8} {:<10} {}",
+                    a["agent"].as_str().unwrap_or(""),
+                    a["protocol"].as_str().unwrap_or(""),
+                    if a["available"].as_bool().unwrap_or(false) { "yes" } else { "NO" },
+                    if a["supports_mcp"].as_bool().unwrap_or(false) { "yes" } else { "no" },
+                    if a["client_writes_files"].as_bool().unwrap_or(false) { "client" } else { "agent" },
+                    a["version"].as_str().unwrap_or(""),
                 );
             }
             Ok(())
@@ -363,6 +413,9 @@ fn main() -> Result<()> {
                     }
                     if let Some(i) = flag_value(&args, "--id") {
                         params["id"] = json!(i);
+                    }
+                    if let Some(a) = flag_value(&args, "--agent") {
+                        params["agent"] = json!(a);
                     }
                     let out = rt().block_on(rpc_call(&sock, "instance.start", params))?;
                     println!("{}", serde_json::to_string_pretty(&out)?);

@@ -1,5 +1,6 @@
 //! 드라이버 프로세스: 띄우기·턴 넣기·이벤트 받기·중단·종료.
 
+use crate::agent::AgentKind;
 use crate::spec::{BotSpec, PermissionPolicy};
 use crate::stream::{self, DriverEvent};
 use anyhow::{bail, Context, Result};
@@ -12,6 +13,25 @@ use tokio::sync::mpsc;
 
 /// 부모 세션의 환경을 물려주지 않는다(S1·S4). 이 목록만 넘긴다.
 pub const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "USER", "SHELL", "TERM", "TMPDIR"];
+
+/// 백엔드가 인증에 쓰는 환경변수. 이 목록에 있는 것만 자식에게 넘긴다
+/// (부모의 Claude Code 세션 변수는 계속 끊는다 — 그건 `CLAUDECODE*`라 여기 없다).
+pub const AUTH_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "XAI_API_KEY",
+    "GROQ_API_KEY",
+    "CEREBRAS_API_KEY",
+    "MOONSHOT_API_KEY",
+    "ZAI_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_REGION",
+];
 
 #[derive(Debug, Clone)]
 pub struct DriverConfig {
@@ -31,8 +51,17 @@ pub struct DriverConfig {
     pub add_dirs: Vec<PathBuf>,
     /// 기존 세션을 이어 붙인다(`--resume`).
     pub resume: bool,
-    /// CLI 경로(테스트에서 바꾼다).
-    pub claude_bin: String,
+    /// 실행 파일 경로(비우면 백엔드 기본값·PATH).
+    pub bin: Option<String>,
+    /// 어느 에이전트로 돌릴지.
+    pub agent: AgentKind,
+    /// jadecode 서버 소켓(ACP·Pi 도구가 쓴다).
+    pub socket: PathBuf,
+    pub instance_id: String,
+    pub project: String,
+    pub card: Option<String>,
+    /// 워크스페이스 뿌리(pi 확장이 CLI에 넘긴다).
+    pub workspace: PathBuf,
     /// 설정 파일을 둘 곳(인스턴스 폴더). 없으면 임시 폴더를 만든다.
     pub state_dir: Option<PathBuf>,
     pub max_turns: Option<u64>,
@@ -75,6 +104,12 @@ impl DriverConfig {
     }
 
     /// CLI 인자. 계약 테스트가 이 목록을 본다.
+    pub fn bin(&self) -> &str {
+        self.bin
+            .as_deref()
+            .unwrap_or_else(|| self.agent.default_bin())
+    }
+
     pub fn args(&self, f: &PreparedFiles) -> Vec<String> {
         let mut a: Vec<String> = vec![
             "-p".into(),
@@ -140,7 +175,7 @@ impl DriverConfig {
     /// 자식 환경: 화이트리스트 + jadecode 변수.
     pub fn env(&self) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
-        for k in ENV_WHITELIST {
+        for k in ENV_WHITELIST.iter().chain(AUTH_ENV.iter()) {
             if let Ok(v) = std::env::var(k) {
                 env.insert(k.to_string(), v);
             }
@@ -210,7 +245,7 @@ impl Driver {
         if !config.cwd.is_dir() {
             bail!("cwd 없음: {}", config.cwd.display());
         }
-        let mut cmd = Command::new(&config.claude_bin);
+        let mut cmd = Command::new(config.bin());
         cmd.args(&args)
             .current_dir(&config.cwd)
             .env_clear()
@@ -231,7 +266,7 @@ impl Driver {
         }
         let mut child = cmd
             .spawn()
-            .with_context(|| format!("spawn {} {:?}", config.claude_bin, args))?;
+            .with_context(|| format!("spawn {} {:?}", config.bin(), args))?;
         let pid = child.id().unwrap_or(0);
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().context("no stdout")?;
@@ -431,7 +466,13 @@ mod tests {
             mcp_env: BTreeMap::new(),
             add_dirs: vec![],
             resume: false,
-            claude_bin: "claude".into(),
+            bin: Some("claude".into()),
+            agent: AgentKind::Claude,
+            socket: PathBuf::from("/tmp/x.sock"),
+            instance_id: "w1".into(),
+            project: "p1".into(),
+            card: None,
+            workspace: PathBuf::from("/tmp/ws"),
             state_dir: Some(tmp.join("state")),
             max_turns: None,
             extra_args: vec![],
@@ -484,6 +525,10 @@ mod tests {
         let c = cfg();
         let e = c.env();
         assert!(!e.contains_key("CLAUDECODE"));
+        // 인증 변수는 넘어간다(설정돼 있으면)
+        if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            assert!(e.contains_key("DEEPSEEK_API_KEY"));
+        }
         assert!(!e.contains_key("CLAUDE_CODE_SESSION_ID"));
         assert!(e.contains_key("HOME"));
         assert!(e.contains_key("PATH"));
