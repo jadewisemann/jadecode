@@ -38,7 +38,7 @@ jobs:
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxcb-randr0-dev libxcb-xkb-dev libssl-dev pkg-config
       - name: build
-        run: cargo build --release --workspace --bins
+        run: cargo build --release --workspace --features jc-client/ui --bins
       - name: package
         run: |
           set -euo pipefail
@@ -87,7 +87,7 @@ jobs:
         with:
           key: release-macos
       - name: build
-        run: cargo build --release --workspace --bins
+        run: cargo build --release --workspace --features jc-client/ui --bins
       - name: package
         run: |
           set -euo pipefail

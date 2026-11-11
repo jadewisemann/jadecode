@@ -36,7 +36,7 @@ fi
 
 BINS="jadecode jadecode-mcp jadecode-client jc-bench"
 for b in $BINS; do
-  [ -x "target/release/$b" ] || { echo "target/release/$b 없음. cargo build --release --workspace --bins 먼저" >&2; exit 3; }
+  [ -x "target/release/$b" ] || { echo "target/release/$b 없음. cargo build --release --workspace --features jc-client/ui --bins 먼저" >&2; exit 3; }
 done
 
 DIR="jadecode-${TAG}-${PLATFORM}"

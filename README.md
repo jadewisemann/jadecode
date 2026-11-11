@@ -20,6 +20,7 @@ export JADECODE_MCP=$PWD/target/debug/jadecode-mcp   # 서버가 인스턴스에
 $J init ~/jc/acme --name Acme        # 봇 4개(orchestrator/worker/reviewer/researcher)와 policy/가 생긴다
 cd ~/jc/acme
 $J server &                          # .jadecode/jadecode.sock (0600). 쓰기 프로세스는 하나만(flock)
+                                     # 경로가 길면 자동으로 /tmp/jc-<이름>.sock 으로 물러난다(macOS 104자 한도)
 $J project add api
 $J card add "로그인 throttle" --project api --path implement,verify
 $J card list
@@ -31,6 +32,7 @@ $J permission list                   # 사람 답을 기다리는 권한 요청
 $J permission allow 42 "merge ok"    # 그 요청 승인
 $J check                             # 일지·색인 전수 대조
 
+cargo build -p jc-client --features ui    # 클라이언트는 GPUI 기능을 켜서 빌드
 jadecode-client                      # GPUI 창(서버가 떠 있어야 한다)
 jadecode-client --dump               # 창 없이 보드 스냅숏 JSON
 ```

@@ -17,8 +17,10 @@ futures-util.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 jc-core.workspace = true
-gpui = "0.2.2"
+gpui = { version = "0.2.2", optional = true }
 
 [features]
-# 헤드리스(서버 없이 데이터 계층만) 시험.
+# 기본은 데이터 계층만: GPUI(무거운 X11/Vulkan 의존) 없이 빌드·테스트된다.
+# 화면을 쓰려면 `--features ui` (바이너리 jadecode-client).
 default = []
+ui = ["dep:gpui"]

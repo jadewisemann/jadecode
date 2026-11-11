@@ -5,6 +5,7 @@
 
 pub mod board;
 pub mod format;
+#[cfg(feature = "ui")]
 pub mod ui;
 
 pub use board::{Board, BoardSnapshot, Card, Connection, SnapshotHandle};

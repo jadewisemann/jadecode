@@ -13,8 +13,8 @@ use crate::board::{Board, BoardSnapshot, Card as CardData, EventRow};
 use crate::format;
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, rgb, size, App, Application, Bounds, Context, MouseButton, SharedString, Window,
-    WindowBounds, WindowOptions,
+    div, point, px, rgb, size, App, Application, Bounds, Context, MouseButton, Window, WindowBounds,
+    WindowOptions,
 };
 
 const BG: u32 = 0x14161b;
@@ -70,8 +70,6 @@ pub struct App2 {
     status_line: Option<String>,
     tx: std::sync::mpsc::Sender<Action>,
     action_results: std::sync::mpsc::Receiver<String>,
-    /// 화면이 마지막으로 본 seq(변경 감지).
-    seen_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// 실행 진입점.
@@ -153,10 +151,8 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     let snap = std::sync::Arc::new(std::sync::Mutex::new(std::sync::Arc::new(
         board.snapshot().clone(),
     )));
-    let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(board.snapshot().head_seq));
     {
         let snap = snap.clone();
-        let seen = seen.clone();
         std::thread::Builder::new()
             .name("jadecode-client-sub".into())
             .spawn(move || {
@@ -172,12 +168,10 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
                     loop {
                         match board.poll().await {
                             Some(rows) => {
-                                let head = board.snapshot().head_seq;
                                 if let Ok(mut s) = snap.lock() {
                                     // 이벤트가 왔을 때만 새 스냅숏을 만든다(프레임마다 아님).
                                     *s = std::sync::Arc::new(board.snapshot().clone());
                                 }
-                                seen.store(head, std::sync::atomic::Ordering::Relaxed);
                                 let _ = rows;
                             }
                             None => {
@@ -208,7 +202,6 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
                     status_line: None,
                     tx,
                     action_results: res_rx,
-                    seen_seq: seen.clone(),
                 })
             },
         )

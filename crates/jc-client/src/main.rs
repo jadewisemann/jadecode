@@ -28,5 +28,16 @@ fn main() -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(board.snapshot())?);
         return Ok(());
     }
-    jc_client::ui::run(ws)
+    #[cfg(feature = "ui")]
+    {
+        jc_client::ui::run(ws)
+    }
+    #[cfg(not(feature = "ui"))]
+    {
+        let _ = ws;
+        anyhow::bail!(
+            "이 바이너리는 UI 기능 없이 빌드됐다. `cargo build -p jc-client --features ui`로 다시 빌드하라. \
+             (데이터만 보려면 --dump)"
+        )
+    }
 }
