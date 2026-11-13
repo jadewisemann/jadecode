@@ -88,5 +88,7 @@ jobs:
             libfontconfig1-dev libfreetype-dev libvulkan-dev libx11-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxcb-randr0-dev libxcb-xkb-dev libssl-dev pkg-config
+      - name: 워크플로 구조 검사
+        run: python3 tools/check-workflows.py
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --features jc-client/ui -- -D warnings
