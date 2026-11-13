@@ -203,6 +203,23 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$EXECUTABLE"
 chmod +x "$APP/Contents/MacOS/$EXECUTABLE"
 
+# CLI(서버·MCP)도 번들에 넣는다. 앱 하나만 설치해도 서버를 띄울 수 있게 하려는 것이다.
+# 바이너리는 GUI 옆에 두되 MacOS/ 안에 넣어야 codesign --deep 이 함께 서명한다.
+for helper in jadecode jadecode-mcp; do
+  # 실행 파일 옆에서 찾는다(릴리즈에서는 target/release 에 같이 있다).
+  src=""
+  for cand in "$(dirname "$BIN")/$helper" "$HERE/target/release/$helper" "$HERE/target/debug/$helper"; do
+    [ -x "$cand" ] && { src="$cand"; break; }
+  done
+  if [ -n "$src" ]; then
+    cp "$src" "$APP/Contents/MacOS/$helper"
+    chmod +x "$APP/Contents/MacOS/$helper"
+    echo "포함: $helper"
+  else
+    echo "경고: $helper 를 찾지 못했다(앱에서 서버를 띄울 수 없다)"
+  fi
+done
+
 # 아이콘은 자리만 둔다. .icns 가 없으면 아무것도 넣지 않고 안내만 한다
 # (없는 아이콘을 만들면 Dock 에 물음표가 뜬다).
 ICON_FILE=$(find_icon)
