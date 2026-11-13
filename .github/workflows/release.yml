@@ -181,7 +181,7 @@ jobs:
             dist/*.sha256
             dist/*.dmg
             dist/*.dmg.sha256
-body: |
+          body: |
             ## macOS (Apple Silicon) — DMG로 설치
 
             1. `jadecode-*-macos-aarch64.dmg` 를 내려받아 엽니다.
