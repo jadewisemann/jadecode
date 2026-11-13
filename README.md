@@ -8,51 +8,84 @@
 
 서버 · 네 에이전트 백엔드(Claude Code·OpenCode·omp·pi) · MCP 메시지 도구 · CLI · **GPUI 데스크톱 클라이언트**까지 들어 있다.
 
-## 설치 (릴리즈)
+## 설치
 
-```sh
-# 아카이브 받기: github.com/jadewisemann/jadecode/releases
-tar -xzf jadecode-*-<플랫폼>.tar.gz
-cd jadecode-*-<플랫폼>
-./install.sh            # ~/.local/bin 에 설치 (macOS 는 /Applications/jadecode.app 도)
-```
+### macOS (Apple Silicon) — DMG
 
-지원: `linux-x86_64`, `macos-aarch64`(Apple Silicon). 체크섬(`.sha256`)이 함께 올라간다.
+1. [Releases](../../releases) 에서 `jadecode-*-macos-aarch64.dmg` 를 내려받아 엽니다.
+2. **jadecode.app** 을 **Applications** 폴더로 끌어다 놓습니다.
+3. Applications 에서 jadecode.app 을 엽니다.
 
-### macOS
-
-`install.sh`가 `~/.local/bin`에 바이너리를, `/Applications`에 `jadecode.app`을 설치한다.
-
-```sh
-open /Applications/jadecode.app     # 보드 창
-```
-
-**이 빌드는 코드서명·공증이 없다**(Apple Developer 인증서 필요). 그래서 첫 실행에서
-Gatekeeper 경고가 뜬다. 본인용이면 다음으로 격리 표시를 지우면 된다:
+서명·공증이 없어 첫 실행에서 Gatekeeper 경고가 뜹니다(본인용 빌드):
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/jadecode.app
-xattr -dr com.apple.quarantine ~/.local/bin/jadecode ~/.local/bin/jadecode-mcp ~/.local/bin/jadecode-client
+```
+
+또는 Finder에서 우클릭 → 열기.
+
+앱을 열기 전에 **서버**가 필요합니다:
+
+```sh
+jadecode init ~/jc/work --name Work   # 처음 한 번
+cd ~/jc/work && jadecode server &
+```
+
+### 한 줄 (전 플랫폼)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jadewisemann/jadecode/main/install.sh | sh
+```
+
+하는 일: 최신 릴리즈 내려받기 → **체크섬 검증** → `~/.local/bin`에 바이너리 →
+macOS면 `/Applications/jadecode.app` 설치 + quarantine 해제 → `~/jc/work` 워크스페이스 생성.
+
+옵션(환경변수):
+
+```sh
+JADECODE_VERSION=v0.1.1-alpha   # 특정 태그
+JADECODE_PREFIX=$HOME/bin       # 바이너리 위치
+JADECODE_WS=$HOME/jc/proj       # 워크스페이스 위치
+JADECODE_NO_APP=1               # macOS 앱 설치 건너뛰기
+JADECODE_NO_WS=1                # 워크스페이스 생성 건너뛰기
+curl -fsSL .../install.sh | JADECODE_VERSION=v0.1.1-alpha sh
+```
+
+### 직접 내려받기
+
+```sh
+tar -xzf jadecode-*-<플랫폼>.tar.gz
+cd jadecode-*-<플랫폼>
+./install.sh            # 아카이브 안의 설치 스크립트
+```
+
+지원: `macos-aarch64`(Apple Silicon), `linux-x86_64`. 체크섬(`.sha256`)이 함께 올라간다.
+Intel Mac·ARM 리눅스는 아직 빌드가 없다(소스 빌드만).
+
+### macOS: Gatekeeper
+
+이 빌드는 **코드서명·공증이 없다**(Apple Developer 인증서 필요). 설치 스크립트가 격리 표시를
+지우지만, 직접 내려받았다면 다음을 한 번 실행한다:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/jadecode.app
 ```
 
 또는 Finder에서 우클릭 → 열기, 또는 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기".
 
-클라이언트는 **서버가 떠 있어야** 한다:
+## 처음 실행
 
 ```sh
-cd ~/jc/work && jadecode server &      # 또는 별도 터미널
-open /Applications/jadecode.app
+export PATH="$HOME/.local/bin:$PATH"
+cd ~/jc/work
+jadecode server &                  # 서버(유닉스 소켓)
+open /Applications/jadecode.app    # macOS 앱 (또는 jadecode-client)
 ```
-릴리즈는 태그(`v*`)나 Actions의 `Release` 수동 실행으로 만든다(Draft로 열린다).
 
-macOS 아카이브에는 `jadecode.app` 번들이 들어 있다(Dock 아이콘·앱 이름).
-서명·공증은 아직 하지 않으므로 첫 실행은 우클릭 → 열기로 연다.
-번들만 직접 만들려면:
+클라이언트는 **서버가 떠 있어야** 한다. 에이전트는 각자 설치·로그인이 필요하다:
 
 ```sh
-cargo build --release -p jc-client --features ui --bins
-./tools/make-app.sh                       # dist/jadecode.app
-./tools/make-app.sh --check dist/jadecode.app
+jadecode agents     # claude·opencode·omp·pi 설치·버전 확인
 ```
 
 ## 빠르게
