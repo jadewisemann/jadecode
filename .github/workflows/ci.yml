@@ -61,6 +61,12 @@ jobs:
             libxcb-randr0-dev libxcb-xkb-dev libssl-dev pkg-config
       - name: build client (GPUI)
         run: cargo build -p jc-client --features ui --bins
+      - name: app bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          ./tools/make-app.sh target/debug/jadecode-client dist
+          ./tools/make-app.sh --check dist/jadecode.app
       - name: test client
         run: cargo test -p jc-client --features ui
 
