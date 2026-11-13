@@ -275,7 +275,8 @@ fn main() -> Result<()> {
                 }
                 let plat = platform_tag()?;
                 let dir = format!("jadecode-{tag}-{plat}");
-                let base = format!("https://github.com/jadewisemann/jadecode/releases/download/{tag}");
+                let base =
+                    format!("https://github.com/jadewisemann/jadecode/releases/download/{tag}");
                 let tmp = std::env::temp_dir().join(format!("jc-update-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&tmp);
                 std::fs::create_dir_all(&tmp)?;
@@ -285,7 +286,10 @@ fn main() -> Result<()> {
                 let sha_url = format!("{base}/{dir}.tar.gz.sha256");
                 if rt_download(&sha_url, &tmp.join("a.sha")).await.is_ok() {
                     let expected = std::fs::read_to_string(tmp.join("a.sha"))?
-                        .split_whitespace().next().unwrap_or("").to_string();
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
                     let actual = jc_core::index::sha_file(&tmp.join("a.tgz"))?;
                     if !expected.is_empty() && !actual.eq_ignore_ascii_case(&expected) {
                         anyhow::bail!("체크섬 불일치: 받은 파일이 손상됐다");
@@ -294,29 +298,46 @@ fn main() -> Result<()> {
                 }
                 // 풀기
                 let st = std::process::Command::new("tar")
-                    .arg("-xzf").arg(tmp.join("a.tgz")).arg("-C").arg(&tmp).status()?;
-                if !st.success() { anyhow::bail!("압축 해제 실패"); }
+                    .arg("-xzf")
+                    .arg(tmp.join("a.tgz"))
+                    .arg("-C")
+                    .arg(&tmp)
+                    .status()?;
+                if !st.success() {
+                    anyhow::bail!("압축 해제 실패");
+                }
                 let src = tmp.join(&dir);
                 // 갈아 끼우기: 현재 실행 파일이 있는 폴더에 복사한다.
                 let exe = std::env::current_exe()?;
                 let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
-                let bindir = exe.parent().unwrap_or(std::path::Path::new("/usr/local/bin")).to_path_buf();
+                let bindir = exe
+                    .parent()
+                    .unwrap_or(std::path::Path::new("/usr/local/bin"))
+                    .to_path_buf();
                 let mut replaced = 0;
                 for b in ["jadecode", "jadecode-mcp", "jadecode-client", "jc-bench"] {
                     let s = src.join(b);
-                    if !s.exists() { continue; }
+                    if !s.exists() {
+                        continue;
+                    }
                     let d = bindir.join(b);
                     // 실행 중인 자기 자신은 나중에(맥은 실행 중 파일 교체가 가능하다).
                     match std::fs::copy(&s, &d) {
                         Ok(_) => {
-                            #[cfg(unix)] {
+                            #[cfg(unix)]
+                            {
                                 use std::os::unix::fs::PermissionsExt;
-                                let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755));
+                                let _ = std::fs::set_permissions(
+                                    &d,
+                                    std::fs::Permissions::from_mode(0o755),
+                                );
                             }
                             replaced += 1;
                             println!("갱신: {}", d.display());
                         }
-                        Err(e) => println!("경고: {} 갱신 실패({e}) — 권한을 확인하라", d.display()),
+                        Err(e) => {
+                            println!("경고: {} 갱신 실패({e}) — 권한을 확인하라", d.display())
+                        }
                     }
                 }
                 let _ = std::fs::remove_dir_all(&tmp);
@@ -329,12 +350,22 @@ fn main() -> Result<()> {
                         .unwrap_or_else(|_| "/Applications/jadecode.app".into());
                     let new_app = src.join("jadecode.app");
                     if new_app.is_dir() && std::path::Path::new(&app).is_dir() {
-                        let _ = std::process::Command::new("rm").arg("-rf").arg(&app).status();
-                        let _ = std::process::Command::new("ditto").arg(&new_app).arg(&app).status();
+                        let _ = std::process::Command::new("rm")
+                            .arg("-rf")
+                            .arg(&app)
+                            .status();
+                        let _ = std::process::Command::new("ditto")
+                            .arg(&new_app)
+                            .arg(&app)
+                            .status();
                         let _ = std::process::Command::new("xattr")
-                            .args(["-dr", "com.apple.quarantine"]).arg(&app).status();
+                            .args(["-dr", "com.apple.quarantine"])
+                            .arg(&app)
+                            .status();
                         let _ = std::process::Command::new("codesign")
-                            .args(["--force", "--deep", "--timestamp=none", "--sign", "-"]).arg(&app).status();
+                            .args(["--force", "--deep", "--timestamp=none", "--sign", "-"])
+                            .arg(&app)
+                            .status();
                         println!("앱 갱신: {app}");
                     }
                 }
@@ -365,8 +396,7 @@ fn main() -> Result<()> {
             let sock = default_socket(&ws.root);
 
             // 2) 서버가 이미 도는가
-            let alive = sock.exists()
-                && std::os::unix::net::UnixStream::connect(&sock).is_ok();
+            let alive = sock.exists() && std::os::unix::net::UnixStream::connect(&sock).is_ok();
             if alive {
                 println!("서버가 이미 실행 중: {}", sock.display());
             } else {
@@ -377,7 +407,11 @@ fn main() -> Result<()> {
                 cmd.arg("server").arg("--socket").arg(&sock);
                 cmd.env("JADECODE_WORKSPACE", &ws.root);
                 // 부모의 Claude 세션 변수를 물려주지 않는다(인스턴스 격리와 같은 이유).
-                for k in ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET"] {
+                for k in [
+                    "CLAUDECODE",
+                    "CLAUDE_CODE_SESSION_ID",
+                    "CLAUDE_CODE_MESSAGING_SOCKET",
+                ] {
                     cmd.env_remove(k);
                 }
                 cmd.stdin(std::process::Stdio::null())
@@ -395,7 +429,9 @@ fn main() -> Result<()> {
             }
 
             // 3) 앱 열기(맥). --open 이 있거나 JADECODE_OPEN=1 일 때.
-            if has_flag(&args, "--open") || std::env::var("JADECODE_OPEN").ok().as_deref() == Some("1") {
+            if has_flag(&args, "--open")
+                || std::env::var("JADECODE_OPEN").ok().as_deref() == Some("1")
+            {
                 #[cfg(target_os = "macos")]
                 {
                     let app = std::env::var("JADECODE_APP")
@@ -404,7 +440,9 @@ fn main() -> Result<()> {
                         let _ = std::process::Command::new("open").arg(&app).status();
                         println!("앱 열기: {app}");
                     } else {
-                        println!("앱이 없다: {app} (브라우저에서 설치했으면 Applications 로 옮겨라)");
+                        println!(
+                            "앱이 없다: {app} (브라우저에서 설치했으면 Applications 로 옮겨라)"
+                        );
                     }
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -910,7 +948,10 @@ async fn rt_download(url: &str, dest: &std::path::Path) -> anyhow::Result<()> {
         .arg(url)
         .output()?;
     if !out.status.success() {
-        anyhow::bail!("내려받기 실패: {}", String::from_utf8_lossy(&out.stderr).trim());
+        anyhow::bail!(
+            "내려받기 실패: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
