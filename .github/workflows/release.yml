@@ -179,9 +179,13 @@ jobs:
           draft: true
           prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, 'alpha') || contains(github.event.inputs.tag || github.ref_name, 'beta') || contains(github.event.inputs.tag || github.ref_name, 'rc') }}
           generate_release_notes: true
+          # 재실행해도 같은 이름 자산을 덮어쓴다(있으면 실패하는 기본 동작 방지).
+          overwrite_files: true
+          # 패턴을 좁게 쓴다. `dist/*.sha256` 은 `.dmg.sha256` 까지 잡아
+          # 같은 파일을 두 번 올리려다 실패한다(Not Found - update-a-release-asset).
           files: |
             dist/*.tar.gz
-            dist/*.sha256
+            dist/*.tar.gz.sha256
             dist/*.dmg
             dist/*.dmg.sha256
           body: |
