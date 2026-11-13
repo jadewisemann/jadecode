@@ -165,7 +165,8 @@ fi
 rmdir "$MNT" 2>/dev/null || true
 
 # 체크섬
-shasum -a 256 "$OUT" > "$OUT.sha256"
+# 체크섬 파일에는 파일 이름만 적는다(절대 경로를 넣으면 받는 쪽에서 검증이 안 된다).
+( cd "$(dirname "$OUT")" && shasum -a 256 "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 info ""
 info "완료: $OUT"
 cat "$OUT.sha256"
