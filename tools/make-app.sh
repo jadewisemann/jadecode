@@ -228,10 +228,16 @@ if [ -n "${CODESIGN_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
   codesign --deep --force --options runtime --timestamp \
     --sign "$CODESIGN_IDENTITY" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
-elif [ -n "${CODESIGN_IDENTITY:-}" ]; then
-  echo "서명: 건너뜀 (codesign 없음 — macOS가 아니다)"
+elif command -v codesign >/dev/null 2>&1; then
+  # 인증서가 없어도 **ad-hoc 서명**을 붙인다(codesign -s -).
+  # 서명이 아예 없으면 macOS(특히 Apple Silicon)가 앱을 "손상됨"으로 판정해 실행을 막는다.
+  # ad-hoc 서명은 공증이 아니라서 "확인되지 않은 개발자" 경고는 남지만, "손상됨"은 사라진다.
+  echo "서명: ad-hoc (CODESIGN_IDENTITY 없음) — 손상됨 방지용"
+  codesign --force --deep --timestamp=none --sign - "$APP" \
+    && codesign --verify --deep --strict "$APP" \
+    && echo "서명 검증 통과 (ad-hoc)"
 else
-  echo "서명: 건너뜀 (CODESIGN_IDENTITY 없음) — 서명 없는 앱은 Gatekeeper 경고가 뜬다"
+  echo "서명: 건너뜀 (codesign 없음 — macOS가 아니다)"
 fi
 
 # ---------- 공증(자리) ----------

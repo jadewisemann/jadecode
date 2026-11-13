@@ -106,7 +106,8 @@ rm -f "$OUT"
 # ---------- 스테이징 ----------
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/jadecode-dmg.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT INT TERM
-cp -R "$APP" "$STAGE/$APP_NAME"
+# ditto 를 쓰면 확장 속성·서명·심볼릭 링크가 보존된다(cp -R 은 서명을 깨뜨릴 수 있다).
+ditto "$APP" "$STAGE/$APP_NAME"
 # 드래그 앤 드롭 설치용: /Applications 로 가는 바로가기
 ln -s /Applications "$STAGE/Applications"
 printf '%s\n' \
@@ -158,6 +159,13 @@ if hdiutil attach "$OUT" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 2>&1;
     || { hdiutil detach "$MNT" -quiet || true; rmdir "$MNT"; die "DMG 안 앱이 깨졌다"; }
   [ -L "$MNT/Applications" ] && info "ok   DMG 안 /Applications 바로가기" \
     || info "경고: /Applications 바로가기가 없다"
+  # 서명이 DMG를 거치며 살아 있는지. 깨졌으면 받는 사람이 "손상됨"을 본다.
+  if codesign --verify --deep --strict "$MNT/$APP_NAME" 2>/dev/null; then
+    info "ok   DMG 안 앱 서명 검증 통과"
+  else
+    info "경고: DMG 안 앱 서명 검증 실패 — 받는 쪽에서 '손상됨'이 뜰 수 있다"
+    codesign --force --deep --timestamp=none --sign - "$STAGE/$APP_NAME" >/dev/null 2>&1 || true
+  fi
   hdiutil detach "$MNT" -quiet || true
 else
   info "경고: DMG 마운트 실패(검사 생략)"

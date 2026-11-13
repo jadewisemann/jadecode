@@ -191,10 +191,19 @@ jobs:
             2. **jadecode.app** 을 **Applications** 폴더로 끌어다 놓습니다.
             3. Applications 에서 jadecode.app 을 엽니다.
 
-            서명·공증이 없는 빌드라 첫 실행에서 Gatekeeper 경고가 뜹니다. 본인용이면:
+            **"손상되었습니다" 또는 "확인되지 않은 개발자"가 뜨면** (ad-hoc 서명이라 공증이 없다):
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/jadewisemann/jadecode/main/tools/fix-macos.sh | sh
+            ```
+
+            이 스크립트가 격리 표시를 지우고 ad-hoc 서명을 다시 붙인다.
+
+            수동으로:
 
             ```sh
             xattr -dr com.apple.quarantine /Applications/jadecode.app
+            codesign --force --deep --sign - /Applications/jadecode.app
             ```
 
             또는 Finder에서 우클릭 → 열기, 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기".
