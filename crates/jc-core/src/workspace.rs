@@ -280,30 +280,28 @@ mod tests {
 pub fn short_temp_root(prefix: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    // 이름이 겹치면(이전 실행이 남긴 폴더) 안에 든 잠금 때문에 실패한다.
-    // ULID를 붙여 겹치지 않게 하고, 그래도 있으면 지우고 새로 만든다.
-    let short = format!(
-        "/tmp/{prefix}{}-{}-{}",
-        std::process::id(),
-        n,
-        crate::ulid::new_id()[20..].to_lowercase()
-    );
-    let p = PathBuf::from(&short);
-    if p.exists() {
-        let _ = std::fs::remove_dir_all(&p);
-    }
-    if std::fs::create_dir_all(&p).is_ok() {
-        return p;
+    // 경로는 짧아야 하지만(macOS 소켓 104자), 동시에 절대 겹치면 안 된다.
+    // PID + 원자 카운터 + ULID 조각을 넣는다. **기존 폴더를 지우지 않는다**
+    // (다른 테스트가 쓰는 폴더를 지워 잠금 충돌을 만든 적이 있다).
+    for _ in 0..1000 {
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let tag = crate::ulid::new_id()[22..].to_lowercase(); // 4자
+        let short = format!("/tmp/{prefix}{}-{n}-{tag}", std::process::id());
+        if std::fs::create_dir(&short).is_ok() {
+            return PathBuf::from(short);
+        }
+        // 이미 있으면 다음 이름으로. /tmp 를 못 쓰면 임시 폴더로 물러난다.
+        if !std::path::Path::new("/tmp").is_dir() {
+            break;
+        }
     }
     let fallback = std::env::temp_dir().join(format!(
         "{prefix}{}-{}-{}",
         std::process::id(),
-        n,
+        N.fetch_add(1, Ordering::Relaxed),
         crate::ulid::new_id()[20..].to_lowercase()
     ));
-    let _ = std::fs::remove_dir_all(&fallback);
-    let _ = std::fs::create_dir_all(&fallback);
+    let _ = std::fs::create_dir(&fallback);
     fallback
 }
 
@@ -333,5 +331,36 @@ mod sock_tests {
         assert!(socket_path_len_ok(std::path::Path::new("/tmp/a.sock")));
         let long = format!("/var/folders/xx/{}/s.sock", "a".repeat(120));
         assert!(!socket_path_len_ok(std::path::Path::new(&long)));
+    }
+}
+
+#[cfg(test)]
+mod unique_temp_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn temp_roots_never_collide() {
+        let mut seen = HashSet::new();
+        for _ in 0..200 {
+            let p = short_temp_root("jcu");
+            assert!(p.is_dir(), "{}", p.display());
+            assert!(seen.insert(p.clone()), "중복 경로: {}", p.display());
+            let s = p.to_string_lossy().to_string();
+            assert!(s.len() < 40, "너무 길다: {s}");
+            let _ = std::fs::remove_dir(&p);
+        }
+    }
+
+    #[test]
+    fn temp_root_does_not_delete_existing() {
+        // 같은 이름이 이미 있으면 지우지 않고 다른 이름을 준다.
+        let a = short_temp_root("jcd");
+        std::fs::write(a.join("marker"), "keep").unwrap();
+        let b = short_temp_root("jcd");
+        assert_ne!(a, b);
+        assert!(a.join("marker").exists(), "기존 폴더를 지웠다");
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
     }
 }

@@ -146,14 +146,17 @@ jobs:
           shasum -a 256 "${DIR}.tar.gz" > "${DIR}.tar.gz.sha256"
           # 드래그 앤 드롭 설치용 DMG. 열면 jadecode.app 과 Applications 바로가기가 나온다.
           VERSION="${TAG#v}" ./tools/make-dmg.sh "$DIR/jadecode.app"
+          # 아티팩트는 merge-multiple 로 내려받아 publish 잡의 dist/ 에 합쳐진다.
+          # DMG가 dist/dist/ 로 중첩되지 않도록 작업 폴더 루트로 꺼내 둔다.
+          mv dist/*.dmg dist/*.dmg.sha256 .
       - uses: actions/upload-artifact@v4
         with:
           name: macos-aarch64
           path: |
             jadecode-*.tar.gz
             jadecode-*.tar.gz.sha256
-            dist/jadecode-*.dmg
-            dist/jadecode-*.dmg.sha256
+            jadecode-*.dmg
+            jadecode-*.dmg.sha256
 
   # ---------- Release ----------
   publish:
