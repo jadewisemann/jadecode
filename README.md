@@ -10,6 +10,19 @@
 
 ## 설치
 
+### macOS: 경고를 매번 겪지 않는 방법 (권장)
+
+| 방법 | Gatekeeper 경고 | 비고 |
+|---|---|---|
+| **Homebrew** `brew install --cask jadewisemann/jadecode/jadecode` | **없음** | quarantine 이 안 붙는다. 이후 `brew upgrade` |
+| `curl \| sh` 설치 | **없음** | curl 로 받으면 quarantine 이 안 붙는다 |
+| `jadecode update` | **없음** | 한 번 설치한 뒤부터는 자동 업데이트 |
+| 브라우저로 DMG 다운로드 | 있음 | 브라우저가 quarantine 을 붙인다 |
+
+브라우저 DMG 는 macOS 가 "인터넷에서 받은 파일"로 표시하기 때문에 매번 걸린다.
+**Homebrew 나 `curl` 로 설치하면 그 표시가 붙지 않아 매번 겪지 않는다.**
+Apple Developer 인증서(연 $99)로 서명·공증하면 브라우저 설치도 경고가 없어진다.
+
 ### macOS (Apple Silicon) — DMG
 
 1. [Releases](../../releases) 에서 `jadecode-*-macos-aarch64.dmg` 를 내려받아 엽니다.

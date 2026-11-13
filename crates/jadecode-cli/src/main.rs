@@ -53,6 +53,9 @@ fn usage() -> &'static str {
   permission deny <request_seq> [msg]    거절
   policy                                 사람이 정한 값 보기
   top                                    보드(카드 목록)
+  run [--ws <dir>] [--open]              앱용: 워크스페이스 준비 + 서버를 백그라운드로
+                                         (이미 떠 있으면 그대로 쓴다. --open 이면 .app 열기)
+  update [--check]                       최신 릴리즈로 제자리 업데이트(서명은 ad-hoc 재적용)
 "
 }
 
@@ -245,6 +248,172 @@ fn main() -> Result<()> {
                 }
                 _ => bail!(usage()),
             }
+        }
+        // 자체 업데이트: GitHub 최신 릴리즈를 받아 현재 실행 파일들을 갈아 끼운다.
+        // 브라우저로 매번 내려받아 Gatekeeper 를 다시 겪지 않게 하는 것이 목적이다.
+        Some("update") => {
+            let check_only = has_flag(&args, "--check");
+            let rt = rt();
+            rt.block_on(async move {
+                let cur = env!("CARGO_PKG_VERSION");
+                let tag = match rt_fetch_latest_tag().await {
+                    Ok(t) => t,
+                    Err(e) => anyhow::bail!("최신 버전을 확인할 수 없다: {e}"),
+                };
+                let latest = tag.trim_start_matches('v');
+                // 0.1.2-alpha 처럼 -alpha 접미사가 붙는다. 앞 숫자만 비교한다.
+                let cur_num = cur.split('-').next().unwrap_or(cur);
+                let lat_num = latest.split('-').next().unwrap_or(latest);
+                println!("현재: {cur}   최신: {latest}");
+                if cur_num >= lat_num {
+                    println!("이미 최신이다.");
+                    return Ok::<(), anyhow::Error>(());
+                }
+                if check_only {
+                    println!("업데이트 가능: {tag}");
+                    return Ok(());
+                }
+                let plat = platform_tag()?;
+                let dir = format!("jadecode-{tag}-{plat}");
+                let base = format!("https://github.com/jadewisemann/jadecode/releases/download/{tag}");
+                let tmp = std::env::temp_dir().join(format!("jc-update-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&tmp);
+                std::fs::create_dir_all(&tmp)?;
+                println!("내려받는 중: {dir}.tar.gz");
+                rt_download(&format!("{base}/{dir}.tar.gz"), &tmp.join("a.tgz")).await?;
+                // 체크섬이 있으면 검증한다(깨진 파일로 갈아 끼우지 않게).
+                let sha_url = format!("{base}/{dir}.tar.gz.sha256");
+                if rt_download(&sha_url, &tmp.join("a.sha")).await.is_ok() {
+                    let expected = std::fs::read_to_string(tmp.join("a.sha"))?
+                        .split_whitespace().next().unwrap_or("").to_string();
+                    let actual = jc_core::index::sha_file(&tmp.join("a.tgz"))?;
+                    if !expected.is_empty() && !actual.eq_ignore_ascii_case(&expected) {
+                        anyhow::bail!("체크섬 불일치: 받은 파일이 손상됐다");
+                    }
+                    println!("체크섬 OK");
+                }
+                // 풀기
+                let st = std::process::Command::new("tar")
+                    .arg("-xzf").arg(tmp.join("a.tgz")).arg("-C").arg(&tmp).status()?;
+                if !st.success() { anyhow::bail!("압축 해제 실패"); }
+                let src = tmp.join(&dir);
+                // 갈아 끼우기: 현재 실행 파일이 있는 폴더에 복사한다.
+                let exe = std::env::current_exe()?;
+                let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+                let bindir = exe.parent().unwrap_or(std::path::Path::new("/usr/local/bin")).to_path_buf();
+                let mut replaced = 0;
+                for b in ["jadecode", "jadecode-mcp", "jadecode-client", "jc-bench"] {
+                    let s = src.join(b);
+                    if !s.exists() { continue; }
+                    let d = bindir.join(b);
+                    // 실행 중인 자기 자신은 나중에(맥은 실행 중 파일 교체가 가능하다).
+                    match std::fs::copy(&s, &d) {
+                        Ok(_) => {
+                            #[cfg(unix)] {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755));
+                            }
+                            replaced += 1;
+                            println!("갱신: {}", d.display());
+                        }
+                        Err(e) => println!("경고: {} 갱신 실패({e}) — 권한을 확인하라", d.display()),
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&tmp);
+                println!("{replaced}개 갱신 완료. 다음 실행부터 새 버전이다.");
+
+                // 맥 앱이 있으면 번들도 교체하고 ad-hoc 서명을 다시 붙인다.
+                #[cfg(target_os = "macos")]
+                {
+                    let app = std::env::var("JADECODE_APP")
+                        .unwrap_or_else(|_| "/Applications/jadecode.app".into());
+                    let new_app = src.join("jadecode.app");
+                    if new_app.is_dir() && std::path::Path::new(&app).is_dir() {
+                        let _ = std::process::Command::new("rm").arg("-rf").arg(&app).status();
+                        let _ = std::process::Command::new("ditto").arg(&new_app).arg(&app).status();
+                        let _ = std::process::Command::new("xattr")
+                            .args(["-dr", "com.apple.quarantine"]).arg(&app).status();
+                        let _ = std::process::Command::new("codesign")
+                            .args(["--force", "--deep", "--timestamp=none", "--sign", "-"]).arg(&app).status();
+                        println!("앱 갱신: {app}");
+                    }
+                }
+                Ok(())
+            })
+        }
+        // 앱이 부르는 경로: 워크스페이스 확인 → 서버가 없으면 띄운다 → (선택) 앱 열기.
+        // 사용자가 터미널을 열 필요가 없게 하는 것이 목적이다.
+        Some("run") => {
+            let ws_dir = flag_value(&args, "--ws")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                    PathBuf::from(home).join("jc/work")
+                });
+            // 1) 워크스페이스
+            if !ws_dir.join("jadecode.toml").exists() {
+                std::fs::create_dir_all(&ws_dir)?;
+                let name = ws_dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                Workspace::init(&ws_dir, &name)?;
+                println!("워크스페이스 생성: {}", ws_dir.display());
+            }
+            let ws = Workspace::open(&ws_dir)?;
+            let sock = default_socket(&ws.root);
+
+            // 2) 서버가 이미 도는가
+            let alive = sock.exists()
+                && std::os::unix::net::UnixStream::connect(&sock).is_ok();
+            if alive {
+                println!("서버가 이미 실행 중: {}", sock.display());
+            } else {
+                // 자기 자신을 다시 불러 서버를 백그라운드로 띄운다(앱이 죽어도 서버는 남는다).
+                let exe = std::env::current_exe()?;
+                println!("서버 시작: {}", sock.display());
+                let mut cmd = std::process::Command::new(&exe);
+                cmd.arg("server").arg("--socket").arg(&sock);
+                cmd.env("JADECODE_WORKSPACE", &ws.root);
+                // 부모의 Claude 세션 변수를 물려주지 않는다(인스턴스 격리와 같은 이유).
+                for k in ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET"] {
+                    cmd.env_remove(k);
+                }
+                cmd.stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                let child = cmd.spawn()?;
+                println!("서버 pid: {}", child.id());
+                // 소켓이 생길 때까지 잠깐 기다린다(앱이 바로 붙을 수 있게).
+                for _ in 0..150 {
+                    if sock.exists() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+
+            // 3) 앱 열기(맥). --open 이 있거나 JADECODE_OPEN=1 일 때.
+            if has_flag(&args, "--open") || std::env::var("JADECODE_OPEN").ok().as_deref() == Some("1") {
+                #[cfg(target_os = "macos")]
+                {
+                    let app = std::env::var("JADECODE_APP")
+                        .unwrap_or_else(|_| "/Applications/jadecode.app".into());
+                    if std::path::Path::new(&app).is_dir() {
+                        let _ = std::process::Command::new("open").arg(&app).status();
+                        println!("앱 열기: {app}");
+                    } else {
+                        println!("앱이 없다: {app} (브라우저에서 설치했으면 Applications 로 옮겨라)");
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    println!("앱 자동 열기는 macOS 에서만 된다: jadecode-client 를 직접 실행하라");
+                }
+            }
+            println!("워크스페이스: {}", ws.root.display());
+            Ok(())
         }
         Some("server") => {
             let ws = open_ws()?;
@@ -687,6 +856,65 @@ fn server_up(ws: &Workspace, args: &[String]) -> Option<PathBuf> {
 
 /// 기본 소켓 경로. 경로가 유닉스 소켓 한도를 넘으면 짧은 곳에 둔다
 /// (macOS `sun_path` 104바이트). 긴 경로에서도 서버가 뜨게 하려는 것이다.
+/// 설치된 플랫폼 태그(릴리즈 자산 이름에 쓰는 것과 같아야 한다).
+fn platform_tag() -> anyhow::Result<String> {
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        anyhow::bail!("지원하지 않는 OS");
+    };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        anyhow::bail!("지원하지 않는 CPU");
+    };
+    Ok(format!("{os}-{arch}"))
+}
+
+/// GitHub 최신 릴리즈 태그를 얻는다(`v` 포함).
+async fn rt_fetch_latest_tag() -> anyhow::Result<String> {
+    let body = rt_get("https://api.github.com/repos/jadewisemann/jadecode/releases").await?;
+    let v: serde_json::Value = serde_json::from_str(&body)?;
+    let arr = v.as_array().cloned().unwrap_or_default();
+    // 초안은 건너뛰고 첫 정식(pre-release 포함) 태그를 쓴다.
+    for r in arr {
+        if r["draft"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        if let Some(t) = r["tag_name"].as_str() {
+            return Ok(t.to_string());
+        }
+    }
+    anyhow::bail!("릴리즈를 찾을 수 없다")
+}
+
+async fn rt_get(url: &str) -> anyhow::Result<String> {
+    // TLS 를 직접 붙이지 않으려고 curl 을 쓴다(설치 스크립트와 같은 경로).
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "-H", "User-Agent: jadecode-update", url])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+async fn rt_download(url: &str, dest: &std::path::Path) -> anyhow::Result<()> {
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "-o"])
+        .arg(dest)
+        .arg(url)
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!("내려받기 실패: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
 fn default_socket(root: &std::path::Path) -> PathBuf {
     let inside = root.join(".jadecode/jadecode.sock");
     if inside.as_os_str().len() <= 100 {

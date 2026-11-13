@@ -9,6 +9,26 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// 파일의 전체 SHA-256(16진 문자열). 릴리즈 체크섬 검증에 쓴다.
+pub fn sha_file(p: &std::path::Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(p)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
 pub fn sha(b: &[u8]) -> String {
     let d = Sha256::digest(b);
     d.iter().take(12).map(|x| format!("{:02x}", x)).collect()
