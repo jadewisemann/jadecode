@@ -374,7 +374,7 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
         if let Some(d) = cx.primary_display() {
             let ds = d.bounds().size;
             w = w.min(ds.width * 0.94).max(px(960.));
-            h = h.min(ds.height * 0.86).max(px(600.));
+            h = h.min(ds.height * 0.80).max(px(600.));
         }
         let bounds = Bounds::centered(None, size(w, h), cx);
         let window = cx
@@ -950,6 +950,20 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Btn) -
         .child(label.into())
 }
 
+/// 탭 줄에 두는 작은 텍스트 버튼.
+fn link_btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    div()
+        .id(id.into())
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .text_xs()
+        .text_color(rgb(MUTED))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+        .child(label.into())
+}
+
 fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     div()
         .id(id.into())
@@ -1365,7 +1379,7 @@ impl Workspace {
                 "04-card-task",
                 "05-card-changes",
                 "06-intake",
-                "07-intake-reply",
+                "07-kanban-card",
                 "08-inbox",
                 "09-orchestrator",
                 "10-agents",
@@ -1419,16 +1433,27 @@ impl Workspace {
                                 }
                             }
                             3 => this.card_tab = CardTab::Task,
-                            4 => this.card_tab = CardTab::Changes,
+                            4 => {
+                                this.card_tab = CardTab::Changes;
+                                if let Some(p) = first {
+                                    this.send(Action::LoadDiff(p));
+                                }
+                            }
                             5 => {
                                 this.selected_card = None;
                                 this.nav = Nav::Intake;
                             }
                             6 => {
-                                this.reply_target = this.intake.first().map(|x| x.id.clone());
+                                this.nav = Nav::Board;
+                                this.board_mode = BoardMode::Kanban;
+                                if let Some(p) = first {
+                                    this.card_tab = CardTab::Thread;
+                                    this.open_card(p, cx);
+                                }
                             }
                             7 => {
-                                this.reply_target = None;
+                                this.selected_card = None;
+                                this.board_mode = BoardMode::List;
                                 this.nav = Nav::Inbox;
                             }
                             8 => this.nav = Nav::Orchestrator,
@@ -2777,6 +2802,7 @@ impl Workspace {
                 div()
                     .flex()
                     .flex_row()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .text_xs()
@@ -2919,37 +2945,7 @@ impl Workspace {
                         cx.notify();
                     },
                 ))
-            }))
-            .child(
-                button("open-folder", "폴더", Btn::Subtle).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.send(Action::OpenFolder {
-                            card: Some(c4.clone()),
-                            terminal: false,
-                        });
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("open-term", "터미널", Btn::Subtle).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.send(Action::OpenFolder {
-                            card: Some(c5.clone()),
-                            terminal: true,
-                        });
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("make-pr", "PR 만들기", Btn::Ghost).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.card_tab = CardTab::Thread;
-                        this.send_from_composer(PR_PROMPT.to_string(), cx);
-                    },
-                )),
-            );
+            }));
         head = head.child(actions_row);
 
         // 탭
@@ -2957,6 +2953,7 @@ impl Workspace {
         let mut tabs = div()
             .flex()
             .flex_row()
+            .items_end()
             .gap_1()
             .px_5()
             .pt_2()
@@ -2992,6 +2989,39 @@ impl Workspace {
                     })),
             );
         }
+
+        // 보조 동작: 탭 줄 오른쪽에 작게 둔다.
+        let tools = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .pb_1()
+            .child(link_btn("open-folder", "폴더").on_click(cx.listener(
+                move |this, _: &ClickEvent, _w, cx| {
+                    this.send(Action::OpenFolder {
+                        card: Some(c4.clone()),
+                        terminal: false,
+                    });
+                    cx.notify();
+                },
+            )))
+            .child(link_btn("open-term", "터미널").on_click(cx.listener(
+                move |this, _: &ClickEvent, _w, cx| {
+                    this.send(Action::OpenFolder {
+                        card: Some(c5.clone()),
+                        terminal: true,
+                    });
+                    cx.notify();
+                },
+            )))
+            .child(link_btn("make-pr", "PR 만들기").on_click(cx.listener(
+                move |this, _: &ClickEvent, _w, cx| {
+                    this.card_tab = CardTab::Thread;
+                    this.send_from_composer(PR_PROMPT.to_string(), cx);
+                },
+            )));
+        tabs = tabs.child(div().flex_1()).child(tools);
 
         let body: AnyElement = match tab {
             CardTab::Thread => {
@@ -3087,7 +3117,11 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_color(rgb(FAINT))
-                    .child("아직 대화가 없습니다."),
+                    .child(if id == "thread" {
+                        "아직 대화가 없습니다. 아래 칸에 할 일을 적어 보내면 워커가 이 카드의 작업 공간에서 일을 시작합니다."
+                    } else {
+                        "아직 대화가 없습니다. 예: \"로그인 버그 카드 만들고 워커 붙여줘\", \"지금 막힌 카드 정리해줘\"처럼 말해 보세요."
+                    }),
             );
         }
         // 도구 호출이 길게 이어지면 묶어서 보인다.
@@ -3669,7 +3703,16 @@ impl Workspace {
                             .child(if a.installed {
                                 format!("{} {}", a.version, a.detail)
                             } else {
-                                "설치되지 않음".to_string()
+                                match a.name.as_str() {
+                                    "claude" => {
+                                        "설치되지 않음 · npm i -g @anthropic-ai/claude-code"
+                                            .to_string()
+                                    }
+                                    "opencode" => {
+                                        "설치되지 않음 · npm i -g opencode-ai".to_string()
+                                    }
+                                    _ => "설치되지 않음".to_string(),
+                                }
                             }),
                     ),
             );
@@ -3703,13 +3746,14 @@ impl Workspace {
                     ))),
             );
         }
-        col = col.child(section_label(format!("도는 인스턴스 {}", snap.instances.len())).px_0());
+        col =
+            col.child(section_label(format!("실행 중인 인스턴스 {}", snap.instances.len())).px_0());
         if snap.instances.is_empty() {
             col = col.child(
                 div()
                     .text_sm()
                     .text_color(rgb(FAINT))
-                    .child("지금 도는 인스턴스가 없습니다."),
+                    .child("지금 실행 중인 인스턴스가 없습니다."),
             );
         }
         for (n, i) in snap.instances.iter().enumerate() {
@@ -3988,11 +4032,11 @@ impl Workspace {
                     .pt_3()
                     .text_xs()
                     .text_color(rgb(match label {
-                        "새로 들어옴" => VIOLET,
-                        "회신 대기" => AMBER,
+                        "new" => VIOLET,
+                        "reply_pending" => AMBER,
                         _ => FAINT,
                     }))
-                    .child(label)
+                    .child(vm::intake_state_label(label))
                     .child(div().text_color(rgb(FAINT)).child(items.len().to_string())),
             );
             for it in items {
