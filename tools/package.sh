@@ -75,7 +75,7 @@ if [ -d "$HERE/jadecode.app" ]; then
   fi
 fi
 echo
-echo "다음: jadecode init ~/jc/work && cd ~/jc/work && jadecode server"
+echo "다음: jadecode-client (또는 open /Applications/jadecode.app). 서버가 없으면 앱이 로컬 백엔드를 띄운다"
 EOS
 
 chmod +x "dist/$DIR/install.sh"

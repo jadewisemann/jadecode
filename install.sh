@@ -149,12 +149,10 @@ fi
 say ""
 say "다음 단계:"
 say "  export PATH=\"$PREFIX:\$PATH\""
-say "  cd \"$WS\""
-say "  jadecode server &          # 서버(유닉스 소켓)"
 if [ "$os" = "macos" ] && [ -d "/Applications/jadecode.app" ]; then
   say "  open /Applications/jadecode.app"
 else
-  say "  jadecode-client            # GUI (서버가 떠 있어야 한다)"
+  say "  jadecode-client            # GUI (서버가 없으면 앱이 로컬 백엔드를 띄운다)"
 fi
 say ""
 say "에이전트(claude·opencode·omp·pi)는 각자 설치·로그인이 필요하다: jadecode agents"

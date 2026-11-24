@@ -957,20 +957,7 @@ async fn rt_download(url: &str, dest: &std::path::Path) -> anyhow::Result<()> {
 }
 
 fn default_socket(root: &std::path::Path) -> PathBuf {
-    let inside = root.join(".jadecode/jadecode.sock");
-    if inside.as_os_str().len() <= 100 {
-        return inside;
-    }
-    // 워크스페이스 이름으로 짧은 소켓을 만든다(/tmp 안).
-    let tag: String = root
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "ws".into())
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let tag: String = tag.chars().take(12).collect();
-    PathBuf::from(format!("/tmp/jc-{tag}.sock"))
+    jc_core::workspace::default_socket(root)
 }
 
 fn socket_path(ws: &Workspace, args: &[String]) -> PathBuf {
