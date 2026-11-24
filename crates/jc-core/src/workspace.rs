@@ -305,6 +305,27 @@ pub fn short_temp_root(prefix: &str) -> PathBuf {
     fallback
 }
 
+/// 워크스페이스의 기본 서버 소켓 경로.
+///
+/// `<워크스페이스>/.jadecode/jadecode.sock`이 소켓 길이 한도(100자)를 넘으면
+/// 워크스페이스 이름으로 `/tmp/jc-<이름>.sock`을 쓴다. CLI 서버와 앱에 내장된
+/// 로컬 백엔드가 같은 규칙을 써야 서로를 찾는다.
+pub fn default_socket(root: &std::path::Path) -> PathBuf {
+    let inside = root.join(".jadecode/jadecode.sock");
+    if inside.as_os_str().len() <= 100 {
+        return inside;
+    }
+    let tag: String = root
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "ws".into())
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(12)
+        .collect();
+    PathBuf::from(format!("/tmp/jc-{tag}.sock"))
+}
+
 /// 유닉스 소켓 경로가 플랫폼 한도 안에 드는지(진단용).
 pub fn socket_path_len_ok(p: &std::path::Path) -> bool {
     // macOS 104, 리눅스 108. 양쪽 다 안전한 100을 기준으로 본다.

@@ -50,12 +50,9 @@ open /Applications/jadecode.app
 
 Finder에서 우클릭 → 열기도 됩니다.
 
-앱을 열기 전에 **서버**가 필요합니다:
-
-```sh
-jadecode init ~/jc/work --name Work   # 처음 한 번
-cd ~/jc/work && jadecode server &
-```
+서버를 따로 띄울 필요는 없습니다. 앱을 열면 떠 있는 서버에 먼저 붙고, 없으면 **앱 안에서 로컬
+백엔드를 직접 띄웁니다**. 워크스페이스가 없으면 `~/jc/work`를 만들어 씁니다. 앱 번들에
+`jadecode`·`jadecode-mcp`가 들어 있어서 에이전트 인스턴스도 앱만으로 동작합니다.
 
 ### 한 줄 (전 플랫폼)
 
@@ -102,13 +99,19 @@ xattr -dr com.apple.quarantine /Applications/jadecode.app
 ## 처음 실행
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
-cd ~/jc/work
-jadecode server &                  # 서버(유닉스 소켓)
 open /Applications/jadecode.app    # macOS 앱 (또는 jadecode-client)
 ```
 
-클라이언트는 **서버가 떠 있어야** 한다. 에이전트는 각자 설치·로그인이 필요하다:
+앱은 이렇게 백엔드를 고른다.
+
+1. 워크스페이스: 인자 → `JADECODE_WORKSPACE` → 현재 폴더에서 위로 → `~/jc/work`(없으면 만든다).
+2. 그 워크스페이스의 서버(`jadecode server`)가 떠 있으면 거기 붙는다. 헤더 오른쪽에 `서버 연결`로 보인다.
+3. 없으면 같은 프로세스 안에서 로컬 백엔드(`jc-server`)를 띄우고 붙는다. 헤더에 `로컬 백엔드`로 보인다.
+   같은 소켓을 열기 때문에 앱이 켜져 있는 동안 CLI·MCP도 그대로 붙는다. 앱을 닫으면 함께 끝난다.
+4. 외부 서버만 쓰려면 `JADECODE_NO_EMBED=1`.
+
+앱을 닫아도 계속 돌아야 하면(에이전트를 밤새 돌릴 때 등) 서버를 따로 띄운다: `cd ~/jc/work && jadecode server &`.
+에이전트는 각자 설치·로그인이 필요하다:
 
 ```sh
 jadecode agents     # claude·opencode·omp·pi 설치·버전 확인
@@ -139,7 +142,7 @@ $J permission allow 42 "merge ok"    # 그 요청 승인
 $J check                             # 일지·색인 전수 대조
 
 cargo build -p jc-client --features ui    # 클라이언트는 GPUI 기능을 켜서 빌드
-jadecode-client                      # GPUI 창(서버가 떠 있어야 한다)
+jadecode-client                      # GPUI 창(서버가 없으면 앱 안에서 로컬 백엔드를 띄운다)
 jadecode-client --dump               # 창 없이 보드 스냅숏 JSON
 ```
 

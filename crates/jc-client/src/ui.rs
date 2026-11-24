@@ -68,13 +68,26 @@ pub struct App2 {
     chat_input: String,
     /// 마지막 동작 오류(화면 아래에 보인다).
     status_line: Option<String>,
+    /// 붙은 백엔드 설명(서버 연결 / 로컬 백엔드 + 워크스페이스).
+    backend_label: String,
     tx: std::sync::mpsc::Sender<Action>,
     action_results: std::sync::mpsc::Receiver<String>,
 }
 
 /// 실행 진입점.
 pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
-    let conn = crate::board::Connection::discover(workspace.as_deref())?;
+    // 떠 있는 서버가 있으면 붙고, 없으면 이 프로세스 안에서 로컬 백엔드를 띄운다.
+    let backend = crate::local::ensure_backend(workspace.as_deref())?;
+    let backend_label = format!(
+        "{} · {}",
+        backend.label(),
+        backend
+            .workspace
+            .as_ref()
+            .map(|w| w.display().to_string())
+            .unwrap_or_else(|| backend.conn.socket.display().to_string())
+    );
+    let conn = backend.conn.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -200,6 +213,7 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
                     card_md: String::new(),
                     chat_input: String::new(),
                     status_line: None,
+                    backend_label: backend_label.clone(),
                     tx,
                     action_results: res_rx,
                 })
@@ -276,6 +290,14 @@ impl App2 {
             );
         }
         row = row.child(div().flex_1());
+        row = row.child(
+            div()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(self.backend_label.clone()),
+        );
         let projects: Vec<(Option<String>, String)> = std::iter::once((None, "전체".to_string()))
             .chain(
                 self.snap()

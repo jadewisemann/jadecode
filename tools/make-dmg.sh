@@ -115,7 +115,7 @@ printf '%s\n' \
   "" \
   "1. jadecode.app 을 Applications 폴더로 끌어다 놓으세요." \
   "2. Applications 에서 jadecode.app 을 엽니다." \
-  "3. 서버가 필요합니다: 터미널에서  jadecode server" \
+  "3. 서버를 따로 띄울 필요는 없습니다. 앱이 로컬 백엔드를 직접 띄웁니다." \
   "" \
   "서명되지 않은 빌드라 첫 실행 시 경고가 뜰 수 있습니다." \
   "  Finder 에서 우클릭 → 열기, 또는" \

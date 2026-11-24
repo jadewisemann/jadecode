@@ -136,8 +136,7 @@ jobs:
             echo "      또는 Finder 에서 우클릭 → 열기, 또는 시스템 설정 → 개인정보 보호 및 보안 → \"그래도 열기\""
           fi
           echo
-          echo "다음: jadecode init ~/jc/work && cd ~/jc/work && jadecode server"
-          echo "클라이언트: /Applications/jadecode.app (서버가 떠 있어야 한다)"
+          echo "다음: open /Applications/jadecode.app (서버가 없으면 앱이 로컬 백엔드를 띄운다)"
           EOF
           chmod +x "$DIR/install.sh"
           # .app 은 디렉터리다. tar.gz 는 실행 권한·심볼릭 링크를 그대로 보존하므로
@@ -271,12 +270,10 @@ jobs:
 
             ## 첫 실행
 
-            앱을 열기 전에 **서버**가 떠 있어야 합니다:
+            앱을 열면 됩니다. 떠 있는 서버가 없으면 앱이 안에서 로컬 백엔드를 띄우고,
+            워크스페이스가 없으면 `~/jc/work`를 만듭니다.
 
             ```sh
-            jadecode init ~/jc/work --name Work    # 처음 한 번
-            cd ~/jc/work
-            jadecode server &                      # .jadecode/jadecode.sock
             open /Applications/jadecode.app        # 보드 창
             ```
 

@@ -80,6 +80,7 @@
 - `jc-client`: 데이터 계층(`Board`)과 화면(`ui`)을 나눴다. 데이터 계층은 WebSocket JSON-RPC로 붙고, 이벤트 구독으로 스냅숏을 갱신한다.
 - 화면: 보드(프로젝트 선택 + 단계 열), 카드(경로 진행·인스턴스·메시지·task.md), 대화(권한 승인 버튼 포함), 봇/인스턴스.
 - 쓰기 동작은 별도 스레드·별도 연결로 실행한다(GPUI 실행기와 tokio를 섞지 않는다).
+- **로컬 백엔드**(`jc-client::local`): 서버에 못 붙으면 앱 프로세스 안의 백그라운드 스레드에서 `jc_server::serve`를 돌리고 그 소켓에 붙는다. 워크스페이스가 없으면 `~/jc/work`를 만든다. macOS 앱은 PATH가 짧아 로그인 셸 PATH와 흔한 설치 위치(`/opt/homebrew/bin` 등)를 붙인다. `JADECODE_NO_EMBED=1`이면 띄우지 않는다.
 - `jadecode-client --dump`는 창 없이 스냅숏을 JSON으로 낸다(CI·헤드리스 시험용).
 - **이 컨테이너에서는 창이 검게 나온다**: Vulkan 드라이버가 없어(`/dev/dri` 없음) 렌더 결과가 화면에 오지 않는다. GPUI 최소 예제도 같다. 창 생성·데이터 바인딩은 확인했고, 실제 픽셀 확인은 Mac(또는 GPU 있는 리눅스)에서 해야 한다.
 - GPUI 0.2.2가 끌어오는 `zed-async-tar`가 `xattr 0.2`를 고정하는데 그 판이 최신 libc(aarch64)에서 `libc::ENOATTR`로 깨진다 → `vendor/xattr`에 상수만 고친 사본을 두고 `[patch.crates-io]`로 쓴다.

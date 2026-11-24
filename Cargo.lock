@@ -2904,6 +2904,7 @@ dependencies = [
  "futures-util",
  "gpui",
  "jc-core",
+ "jc-server",
  "serde",
  "serde_json",
  "tokio",
