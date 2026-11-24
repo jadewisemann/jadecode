@@ -7,6 +7,7 @@
 pub mod board;
 pub mod format;
 pub mod local;
+pub mod logging;
 #[cfg(feature = "ui")]
 pub mod ui;
 pub mod view_model;

@@ -477,7 +477,7 @@ impl McpSession {
         s.request(
             "initialize",
             json!({"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "jadecode", "version": env!("CARGO_PKG_VERSION")}}),
+                   "clientInfo": {"name": "jadecode", "version": jc_core::version::VERSION}}),
         )
         .await
         .context("MCP initialize")?;

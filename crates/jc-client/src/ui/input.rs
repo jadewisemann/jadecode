@@ -1,9 +1,12 @@
-//! 한 줄 텍스트 입력. GPUI 0.2.2 예제의 입력기를 바탕으로 했다.
+//! 텍스트 입력. GPUI 0.2.2 예제의 입력기를 바탕으로 했다.
 //!
 //! - 운영체제 입력기(IME)를 쓴다(`EntityInputHandler`). 한글 조합 중인 글자에 밑줄을 긋고,
 //!   후보 창 위치(`bounds_for_range`)를 알려 준다.
 //! - 예제에 있던 조합 범위 계산 오류(`range.end`를 더하던 것)를 고쳤다.
-//! - 글이 칸보다 길면 커서가 보이도록 옆으로 민다.
+//! - 한 줄 칸은 글이 칸보다 길면 커서가 보이도록 옆으로 민다.
+//! - 여러 줄 칸(`multiline`)은 칸 너비에서 줄을 바꾸고, 최대 줄 수까지 높이가 자라며 그 뒤로는 위아래로 민다.
+//!   Shift-Enter(또는 Alt-Enter)로 줄을 바꾸고, 붙여 넣은 글의 줄바꿈을 지킨다.
+//! - 비밀 칸(`secret`)은 글자를 •로 가린다.
 //! - Enter는 `Submitted`, Esc는 `Cancelled` 이벤트를 낸다.
 
 use gpui::{
@@ -11,12 +14,14 @@ use gpui::{
     ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
+    SharedString, Style, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
 };
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::theme;
+
+const BULLET: char = '•';
 
 actions!(
     text_input,
@@ -39,6 +44,11 @@ actions!(
         WordLeft,
         WordRight,
         DeleteWordLeft,
+        Newline,
+        Up,
+        Down,
+        SelectUp,
+        SelectDown,
     ]
 );
 
@@ -68,6 +78,12 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, ctx),
         KeyBinding::new("enter", Submit, ctx),
+        KeyBinding::new("shift-enter", Newline, ctx),
+        KeyBinding::new("alt-enter", Newline, ctx),
+        KeyBinding::new("up", Up, ctx),
+        KeyBinding::new("down", Down, ctx),
+        KeyBinding::new("shift-up", SelectUp, ctx),
+        KeyBinding::new("shift-down", SelectDown, ctx),
         KeyBinding::new("escape", Cancel, ctx),
     ]);
 }
@@ -87,10 +103,14 @@ pub struct TextInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    last_layout: Option<ShapedLine>,
+    last_layout: Option<Layout>,
     last_bounds: Option<Bounds<Pixels>>,
-    /// 옆으로 민 거리(글이 칸보다 길 때).
-    last_scroll: Pixels,
+    /// 민 거리(한 줄 칸은 옆으로, 여러 줄 칸은 위아래로).
+    last_scroll: Point<Pixels>,
+    /// 여러 줄 칸이면 최대 줄 수.
+    multiline: Option<usize>,
+    /// 글자를 가린다(토큰 등).
+    secret: bool,
     is_selecting: bool,
     /// Enter를 눌러도 비우지 않는다(검색칸 등).
     keep_on_submit: bool,
@@ -109,10 +129,24 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
-            last_scroll: px(0.),
+            last_scroll: Point::default(),
+            multiline: None,
+            secret: false,
             is_selecting: false,
             keep_on_submit: false,
         }
+    }
+
+    /// 여러 줄 칸으로 만든다. 높이는 `max_lines`줄까지 자란다.
+    pub fn multiline(mut self, max_lines: usize) -> Self {
+        self.multiline = Some(max_lines.max(1));
+        self
+    }
+
+    /// 글자를 •로 가린다.
+    pub fn secret(mut self) -> Self {
+        self.secret = true;
+        self
     }
 
     pub fn keep_on_submit(mut self) -> Self {
@@ -145,7 +179,7 @@ impl TextInput {
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
-        self.last_scroll = px(0.);
+        self.last_scroll = Point::default();
         cx.notify();
     }
 
@@ -217,12 +251,101 @@ impl TextInput {
         self.select_to(self.content.len(), cx)
     }
 
+    /// 커서가 있는 줄(문단)의 시작.
+    fn line_start(&self, offset: usize) -> usize {
+        self.content[..offset]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    }
+
+    /// 커서가 있는 줄(문단)의 끝.
+    fn line_end(&self, offset: usize) -> usize {
+        self.content[offset..]
+            .find('\n')
+            .map(|i| offset + i)
+            .unwrap_or(self.content.len())
+    }
+
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
+        self.move_to(self.line_start(self.cursor_offset()), cx);
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        self.move_to(self.line_end(self.cursor_offset()), cx);
+    }
+
+    fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.multiline.is_some() {
+            self.replace_text_in_range(None, "\n", window, cx);
+        }
+    }
+
+    /// 화면에서 한 줄 위(-1)나 아래(+1)의 같은 x 위치.
+    fn vertical_target(&self, dir: i32) -> Option<usize> {
+        let layout = self.last_layout.as_ref()?;
+        if self.multiline.is_none() || self.content.is_empty() {
+            return None;
+        }
+        let pos = layout.position(self.content_to_disp(self.cursor_offset()));
+        let y = pos.y + layout.line_height * (dir as f32) + layout.line_height / 2.;
+        if y < px(0.) {
+            return Some(0);
+        }
+        if y >= layout.height {
+            return Some(self.content.len());
+        }
+        Some(self.disp_to_content(layout.index_at(point(pos.x, y))))
+    }
+
+    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.vertical_target(-1) {
+            self.move_to(ix, cx);
+        }
+    }
+
+    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.vertical_target(1) {
+            self.move_to(ix, cx);
+        }
+    }
+
+    fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.vertical_target(-1) {
+            self.select_to(ix, cx);
+        }
+    }
+
+    fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.vertical_target(1) {
+            self.select_to(ix, cx);
+        }
+    }
+
+    /// 내용 오프셋 → 화면 글 오프셋(비밀 칸은 글자마다 •).
+    fn content_to_disp(&self, offset: usize) -> usize {
+        if self.secret {
+            self.content[..offset.min(self.content.len())]
+                .chars()
+                .count()
+                * BULLET.len_utf8()
+        } else {
+            offset
+        }
+    }
+
+    /// 화면 글 오프셋 → 내용 오프셋.
+    fn disp_to_content(&self, offset: usize) -> usize {
+        if self.secret {
+            let n = offset / BULLET.len_utf8();
+            self.content
+                .char_indices()
+                .nth(n)
+                .map(|(i, _)| i)
+                .unwrap_or(self.content.len())
+        } else {
+            offset.min(self.content.len())
+        }
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -275,12 +398,18 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            let text = text.replace("\r\n", "\n");
+            let text = if self.multiline.is_some() {
+                text
+            } else {
+                text.replace('\n', " ")
+            };
+            self.replace_text_in_range(None, &text, window, cx);
         }
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.secret {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -288,7 +417,7 @@ impl TextInput {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.secret {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -314,7 +443,7 @@ impl TextInput {
         if self.content.is_empty() {
             return 0;
         }
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
+        let (Some(bounds), Some(layout)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
         else {
             return 0;
         };
@@ -324,7 +453,11 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left() + self.last_scroll)
+        let local = point(
+            position.x - bounds.left() + self.last_scroll.x,
+            position.y - bounds.top() + self.last_scroll.y,
+        );
+        self.disp_to_content(layout.index_at(local))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -521,12 +654,16 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
+        let layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let left = bounds.left() - self.last_scroll;
+        let origin = bounds.origin - self.last_scroll;
+        let a = layout.position(self.content_to_disp(range.start));
+        let b = layout.position(self.content_to_disp(range.end));
+        // 조합 글자가 줄을 넘으면 끝 줄 기준으로 알린다(후보 창 위치용).
+        let a = if a.y == b.y { a } else { point(px(0.), b.y) };
         Some(Bounds::from_corners(
-            point(left + last_layout.x_for_index(range.start), bounds.top()),
-            point(left + last_layout.x_for_index(range.end), bounds.bottom()),
+            origin + a,
+            origin + point(b.x, b.y + layout.line_height),
         ))
     }
 
@@ -536,10 +673,85 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let line_point = self.last_bounds?.localize(&point)?;
-        let last_layout = self.last_layout.as_ref()?;
-        let utf8_index = last_layout.index_for_x(line_point.x + self.last_scroll)?;
-        Some(self.offset_to_utf16(utf8_index))
+        let local = self.last_bounds?.localize(&point)?;
+        let layout = self.last_layout.as_ref()?;
+        let ix = layout.index_at(local + self.last_scroll);
+        Some(self.offset_to_utf16(self.disp_to_content(ix)))
+    }
+}
+
+/// 모양을 잡은 글(문단마다 한 줄, 문단 안에서 줄바꿈). 오프셋은 화면 글 기준이다.
+struct Layout {
+    lines: Vec<WrappedLine>,
+    /// 문단마다 시작 오프셋.
+    starts: Vec<usize>,
+    /// 문단마다 위쪽 y.
+    tops: Vec<Pixels>,
+    line_height: Pixels,
+    height: Pixels,
+    width: Pixels,
+}
+
+impl Layout {
+    fn new(lines: Vec<WrappedLine>, line_height: Pixels) -> Self {
+        let mut starts = Vec::with_capacity(lines.len());
+        let mut tops = Vec::with_capacity(lines.len());
+        let (mut off, mut y, mut w) = (0usize, px(0.), px(0.));
+        for l in &lines {
+            starts.push(off);
+            tops.push(y);
+            off += l.len() + 1;
+            let sz = l.size(line_height);
+            y += sz.height;
+            w = w.max(sz.width);
+        }
+        Self {
+            lines,
+            starts,
+            tops,
+            line_height,
+            height: y.max(line_height),
+            width: w,
+        }
+    }
+
+    /// 오프셋의 위치(글 원점 기준, 그 줄의 위쪽).
+    fn position(&self, ix: usize) -> Point<Pixels> {
+        for i in (0..self.lines.len()).rev() {
+            if ix >= self.starts[i] {
+                let line = &self.lines[i];
+                let local = (ix - self.starts[i]).min(line.len());
+                let p = line
+                    .position_for_index(local, self.line_height)
+                    .unwrap_or_else(|| {
+                        let h = line.size(self.line_height).height;
+                        point(line.width(), h - self.line_height)
+                    });
+                return point(p.x, p.y + self.tops[i]);
+            }
+        }
+        point(px(0.), px(0.))
+    }
+
+    /// 위치에 가장 가까운 오프셋.
+    fn index_at(&self, pt: Point<Pixels>) -> usize {
+        if self.lines.is_empty() {
+            return 0;
+        }
+        let mut i = 0;
+        for (k, top) in self.tops.iter().enumerate() {
+            if pt.y >= *top {
+                i = k;
+            }
+        }
+        let line = &self.lines[i];
+        let h = line.size(self.line_height).height;
+        let y = (pt.y - self.tops[i]).max(px(0.)).min(h - px(1.));
+        let x = pt.x.max(px(0.));
+        let local = match line.closest_index_for_position(point(x, y), self.line_height) {
+            Ok(v) | Err(v) => v,
+        };
+        self.starts[i] + local.min(line.len())
     }
 }
 
@@ -548,10 +760,10 @@ struct TextElement {
 }
 
 struct PrepaintState {
-    line: Option<ShapedLine>,
+    layout: Option<Layout>,
     cursor: Option<PaintQuad>,
-    selection: Option<PaintQuad>,
-    scroll: Pixels,
+    selection: Vec<PaintQuad>,
+    scroll: Point<Pixels>,
 }
 
 impl IntoElement for TextElement {
@@ -559,6 +771,79 @@ impl IntoElement for TextElement {
     fn into_element(self) -> Self::Element {
         self
     }
+}
+
+/// 화면에 보일 글과 색 묶음.
+fn display_runs(input: &TextInput, window: &Window) -> (SharedString, Vec<TextRun>) {
+    let style = window.text_style();
+    let content = &input.content;
+    let (display_text, text_color): (SharedString, gpui::Hsla) = if content.is_empty() {
+        (
+            input.placeholder.clone(),
+            gpui::Hsla::from(rgb(theme::FAINT)),
+        )
+    } else if input.secret {
+        (
+            BULLET.to_string().repeat(content.chars().count()).into(),
+            style.color,
+        )
+    } else {
+        (content.clone(), style.color)
+    };
+    let run = TextRun {
+        len: display_text.len(),
+        font: style.font(),
+        color: text_color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let runs = match input.marked_range.as_ref() {
+        Some(marked) if !content.is_empty() => {
+            let (ms, me) = (
+                input.content_to_disp(marked.start),
+                input.content_to_disp(marked.end),
+            );
+            vec![
+                TextRun {
+                    len: ms,
+                    ..run.clone()
+                },
+                TextRun {
+                    len: me - ms,
+                    underline: Some(UnderlineStyle {
+                        color: Some(run.color),
+                        thickness: px(1.0),
+                        wavy: false,
+                    }),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: display_text.len() - me,
+                    ..run
+                },
+            ]
+            .into_iter()
+            .filter(|run| run.len > 0)
+            .collect()
+        }
+        _ => vec![run],
+    };
+    (display_text, runs)
+}
+
+fn shape(
+    window: &Window,
+    text: SharedString,
+    runs: &[TextRun],
+    wrap: Option<Pixels>,
+) -> Vec<WrappedLine> {
+    let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+    window
+        .text_system()
+        .shape_text(text, font_size, runs, wrap, None)
+        .map(|v| v.into_vec())
+        .unwrap_or_default()
 }
 
 impl Element for TextElement {
@@ -580,9 +865,21 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        let input = self.input.read(cx);
+        let lh = window.line_height();
+        // 여러 줄 칸은 지난 프레임의 너비로 줄 수를 세어 높이를 정한다(너비가 바뀌면 다시 그린다).
+        let rows = match (input.multiline, input.last_bounds) {
+            (Some(max), Some(b)) => {
+                let (text, runs) = display_runs(input, window);
+                let lines = shape(window, text, &runs, Some(b.size.width));
+                let h = lines.iter().fold(px(0.), |a, l| a + l.size(lh).height);
+                ((h / lh).round() as usize).clamp(1, max)
+            }
+            _ => 1,
+        };
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
+        style.size.height = (lh * rows as f32).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -596,104 +893,93 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let content = input.content.clone();
-        let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
-        let prev_scroll = input.last_scroll;
-        let style = window.text_style();
-
-        let (display_text, text_color) = if content.is_empty() {
-            (
-                input.placeholder.clone(),
-                gpui::Hsla::from(rgb(theme::FAINT)),
-            )
+        let multiline = input.multiline.is_some();
+        let empty = input.content.is_empty();
+        let selected = input.content_to_disp(input.selected_range.start)
+            ..input.content_to_disp(input.selected_range.end);
+        let cursor_ix = if empty {
+            0
         } else {
-            (content.clone(), style.color)
+            input.content_to_disp(input.cursor_offset())
         };
+        let prev = input.last_scroll;
+        let lh = window.line_height();
 
-        let run = TextRun {
-            len: display_text.len(),
-            font: style.font(),
-            color: text_color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let runs = match input.marked_range.as_ref() {
-            Some(marked) if !content.is_empty() => vec![
-                TextRun {
-                    len: marked.start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: marked.end - marked.start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len() - marked.end,
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect(),
-            _ => vec![run],
-        };
+        let (text, runs) = display_runs(input, window);
+        let wrap = multiline.then_some(bounds.size.width);
+        let layout = Layout::new(shape(window, text, &runs, wrap), lh);
 
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window
-            .text_system()
-            .shape_line(display_text, font_size, &runs, None);
-
-        let cursor_x = if content.is_empty() {
-            px(0.)
+        let cpos = layout.position(cursor_ix);
+        let mut scroll = prev;
+        if multiline {
+            scroll.x = px(0.);
+            let h = bounds.size.height;
+            if cpos.y + lh - scroll.y > h {
+                scroll.y = cpos.y + lh - h;
+            }
+            if cpos.y < scroll.y {
+                scroll.y = cpos.y;
+            }
+            if layout.height <= h {
+                scroll.y = px(0.);
+            }
         } else {
-            line.x_for_index(cursor)
-        };
-        // 커서가 칸 밖으로 나가면 민다.
-        let width = bounds.size.width;
-        let mut scroll = prev_scroll;
-        if cursor_x - scroll > width - px(4.) {
-            scroll = cursor_x - width + px(4.);
+            scroll.y = px(0.);
+            let width = bounds.size.width;
+            if cpos.x - scroll.x > width - px(4.) {
+                scroll.x = cpos.x - width + px(4.);
+            }
+            if cpos.x < scroll.x {
+                scroll.x = cpos.x;
+            }
+            if layout.width <= width {
+                scroll.x = px(0.);
+            }
         }
-        if cursor_x < scroll {
-            scroll = cursor_x;
-        }
-        if line.width <= width {
-            scroll = px(0.);
-        }
-        let left = bounds.left() - scroll;
+        let origin = bounds.origin - scroll;
 
-        let (selection, cursor) = if selected_range.is_empty() || content.is_empty() {
-            (
-                None,
-                Some(fill(
-                    Bounds::new(
-                        point(left + cursor_x, bounds.top()),
-                        size(px(1.5), bounds.bottom() - bounds.top()),
-                    ),
-                    rgb(theme::ACCENT),
-                )),
-            )
+        let mut selection = vec![];
+        let cursor = if selected.is_empty() || empty {
+            Some(fill(
+                Bounds::new(origin + cpos, size(px(1.5), lh)),
+                rgb(theme::ACCENT),
+            ))
         } else {
-            (
-                Some(fill(
+            let a = layout.position(selected.start);
+            let b = layout.position(selected.end);
+            let color = rgba(0x5b8cff44);
+            let right = layout.width.max(bounds.size.width);
+            if a.y == b.y {
+                selection.push(fill(
+                    Bounds::from_corners(origin + a, origin + point(b.x, b.y + lh)),
+                    color,
+                ));
+            } else {
+                selection.push(fill(
+                    Bounds::from_corners(origin + a, origin + point(right, a.y + lh)),
+                    color,
+                ));
+                if b.y > a.y + lh {
+                    selection.push(fill(
+                        Bounds::from_corners(
+                            origin + point(px(0.), a.y + lh),
+                            origin + point(right, b.y),
+                        ),
+                        color,
+                    ));
+                }
+                selection.push(fill(
                     Bounds::from_corners(
-                        point(left + line.x_for_index(selected_range.start), bounds.top()),
-                        point(left + line.x_for_index(selected_range.end), bounds.bottom()),
+                        origin + point(px(0.), b.y),
+                        origin + point(b.x, b.y + lh),
                     ),
-                    rgba(0x5b8cff44),
-                )),
-                None,
-            )
+                    color,
+                ));
+            }
+            None
         };
         PrepaintState {
-            line: Some(line),
+            layout: Some(layout),
             cursor,
             selection,
             scroll,
@@ -717,22 +1003,40 @@ impl Element for TextElement {
             cx,
         );
         let scroll = prepaint.scroll;
+        let lh = window.line_height();
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            if let Some(selection) = prepaint.selection.take() {
-                window.paint_quad(selection)
+            for q in prepaint.selection.drain(..) {
+                window.paint_quad(q)
             }
-            let line = prepaint.line.take().unwrap();
-            let origin = point(bounds.origin.x - scroll, bounds.origin.y);
-            let _ = line.paint(origin, window.line_height(), window, cx);
+            let layout = prepaint.layout.take().unwrap();
+            let origin = bounds.origin - scroll;
+            for (line, top) in layout.lines.iter().zip(&layout.tops) {
+                let _ = line.paint(
+                    origin + point(px(0.), *top),
+                    lh,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
             if focus_handle.is_focused(window) {
                 if let Some(cursor) = prepaint.cursor.take() {
                     window.paint_quad(cursor);
                 }
             }
-            self.input.update(cx, |input, _cx| {
-                input.last_layout = Some(line);
+            self.input.update(cx, |input, cx| {
+                let width_changed = input.multiline.is_some()
+                    && input
+                        .last_bounds
+                        .map(|b| b.size.width != bounds.size.width)
+                        .unwrap_or(true);
+                input.last_layout = Some(layout);
                 input.last_bounds = Some(bounds);
                 input.last_scroll = scroll;
+                if width_changed {
+                    cx.notify();
+                }
             });
         });
     }
@@ -744,6 +1048,7 @@ impl Render for TextInput {
         div()
             .flex()
             .flex_1()
+            .min_w(px(0.))
             .key_context("TextInput")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
@@ -759,6 +1064,11 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::newline))
+            .on_action(cx.listener(Self::up))
+            .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::select_up))
+            .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))

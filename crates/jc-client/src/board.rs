@@ -143,6 +143,7 @@ pub struct CardDetail {
     pub markdown: String,
     /// 카드 경로(거칠 단계).
     pub stages: Vec<String>,
+    /// "레포 · 브랜치"
     pub repos: Vec<String>,
 }
 
@@ -630,6 +631,14 @@ impl Board {
         Ok(v["stage"].as_str().unwrap_or("").to_string())
     }
 
+    /// 카드를 경로 안의 다른 단계로 옮긴다(칸반 끌어 놓기).
+    pub async fn move_to_stage(&mut self, card: &str, stage: &str) -> Result<String> {
+        let v = self
+            .call("card.advance", json!({"card": card, "to": stage}))
+            .await?;
+        Ok(v["stage"].as_str().unwrap_or("").to_string())
+    }
+
     /// 프로젝트의 오케스트레이터에게 보낸다. 떠 있지 않으면 먼저 띄운다.
     pub async fn send_to_orchestrator(&mut self, project: &str, text: &str) -> Result<()> {
         let inst = self.orchestrator_of(project).await?;
@@ -676,10 +685,11 @@ impl Board {
     }
 
     /// 새 프로젝트. 돌려주는 값은 slug.
-    pub async fn add_project(&mut self, name: &str, repo: Option<&str>) -> Result<String> {
+    /// 프로젝트를 만든다. `repo_path`는 사람 컴퓨터의 git 레포 폴더(선택).
+    pub async fn add_project(&mut self, name: &str, repo_path: Option<&str>) -> Result<String> {
         let mut p = json!({"name": name});
-        if let Some(r) = repo.filter(|r| !r.trim().is_empty()) {
-            p["repo"] = json!(r.trim());
+        if let Some(r) = repo_path.filter(|r| !r.trim().is_empty()) {
+            p["repo_path"] = json!(r.trim());
         }
         let v = self.call("project.add", p).await?;
         let slug = v["slug"].as_str().unwrap_or("").to_string();
@@ -727,7 +737,17 @@ impl Board {
             .as_array()
             .map(|a| {
                 a.iter()
-                    .filter_map(|r| r["name"].as_str().map(String::from))
+                    .filter_map(|r| {
+                        let name = r["repo"].as_str().or(r["name"].as_str())?;
+                        let branch = r["branch"].as_str().unwrap_or("").trim().to_string();
+                        // 비어 있으면 서버가 워크트리를 열 때 쓰는 이름과 같게 보인다.
+                        let branch = if branch.is_empty() {
+                            format!("jc/{}", card.rsplit('/').next().unwrap_or(card))
+                        } else {
+                            branch
+                        };
+                        Some(format!("{name} · {branch}"))
+                    })
                     .collect()
             })
             .unwrap_or_default();

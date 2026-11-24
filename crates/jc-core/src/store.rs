@@ -647,7 +647,19 @@ pub fn acquire_writer_lock(root: &Path) -> Result<File> {
         .read(true)
         .write(true)
         .open(&p)?;
-    let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    // 잠깐 기다렸다 다시 잡는다. 같은 프로세스가 방금 놓은 잠금도, 그 사이 fork된 자식 프로세스가
+    // exec 전까지 파일 설명자를 들고 있으면 잠시 잡힌 것으로 보인다(macOS CI에서 실제로 났다).
+    let mut tries = 0;
+    let r = loop {
+        let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        let busy =
+            r != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK);
+        if !busy || tries >= 40 {
+            break r;
+        }
+        tries += 1;
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
     if r != 0 {
         let e = std::io::Error::last_os_error();
         if e.raw_os_error() == Some(libc::EWOULDBLOCK) {

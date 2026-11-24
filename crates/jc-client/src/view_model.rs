@@ -110,11 +110,8 @@ pub fn group_cards(s: &BoardSnapshot, project: Option<&str>) -> Vec<(Attention, 
 /// 칸반 열: 기본 단계 순서를 먼저, 그 밖의 단계는 등장 순서대로.
 pub fn ordered_stages(s: &BoardSnapshot, project: Option<&str>) -> Vec<String> {
     let seen = s.stages(project);
-    let mut out: Vec<String> = DEFAULT_STAGES
-        .iter()
-        .map(|x| x.to_string())
-        .filter(|x| seen.contains(x))
-        .collect();
+    // 기본 단계는 비어 있어도 열을 보인다(칸반에서 끌어다 놓을 자리).
+    let mut out: Vec<String> = DEFAULT_STAGES.iter().map(|x| x.to_string()).collect();
     for st in seen {
         if !out.contains(&st) {
             out.push(st);
@@ -810,7 +807,10 @@ mod tests {
         s.cards.push(card("work/a/1", "idle", "verify"));
         s.cards.push(card("work/a/2", "idle", "custom"));
         s.cards.push(card("work/a/3", "idle", "refine"));
-        assert_eq!(ordered_stages(&s, None), vec!["refine", "verify", "custom"]);
+        assert_eq!(
+            ordered_stages(&s, None),
+            vec!["refine", "implement", "verify", "pr", "report", "custom"]
+        );
         assert_eq!(ordered_stages(&BoardSnapshot::default(), None).len(), 5);
     }
 

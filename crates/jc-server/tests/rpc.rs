@@ -222,6 +222,25 @@ async fn advance_moves_along_path_then_refuses() {
     let b = call(&mut ws, 2, "card.advance", json!({"card": id})).await;
     assert_eq!(b["error"]["code"], 4000, "{b}");
     assert_eq!(b["error"]["data"]["reason"], "path_end");
+    // 칸반 끌어 놓기: 경로 안의 단계로 바로 옮긴다. 경로 밖은 거절한다.
+    let c = call(
+        &mut ws,
+        3,
+        "card.advance",
+        json!({"card": id, "to": "refine"}),
+    )
+    .await;
+    assert_eq!(c["result"]["stage"], "refine", "{c}");
+    let d = call(
+        &mut ws,
+        4,
+        "card.advance",
+        json!({"card": id, "to": "verify"}),
+    )
+    .await;
+    assert_eq!(d["error"]["data"]["reason"], "not_on_path", "{d}");
+    let e = call(&mut ws, 5, "card.advance", json!({"card": id})).await;
+    assert_eq!(e["result"]["stage"], "implement", "{e}");
     h.client.abort();
 }
 
@@ -530,4 +549,67 @@ for line in sys.stdin:
     assert!(r.get("error").is_none(), "{r}");
     h.client.abort();
     let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_with_repo_path_gives_cards_a_worktree() {
+    let (h, _cards) = setup(&["implement"]).await;
+    let mut ws = connect(&h.socket).await;
+    // 사람 컴퓨터의 레포를 흉내 낸다.
+    let src = h.ws.root.join("src-app");
+    std::fs::create_dir_all(&src).unwrap();
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&src)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .status()
+            .unwrap();
+        assert!(st.success());
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("README"), "x").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "init"]);
+
+    let bad = call(
+        &mut ws,
+        1,
+        "project.add",
+        json!({"name": "nope", "repo_path": h.ws.root.join("missing").display().to_string()}),
+    )
+    .await;
+    assert!(bad["error"].is_object(), "{bad}");
+
+    let p = call(
+        &mut ws,
+        2,
+        "project.add",
+        json!({"name": "web", "repo_path": src.display().to_string()}),
+    )
+    .await;
+    assert_eq!(p["result"]["slug"], "web", "{p}");
+    let toml = std::fs::read_to_string(h.ws.root.join("work/web/project.toml")).unwrap();
+    assert!(toml.contains("name = \"src-app\""), "{toml}");
+
+    let c = call(
+        &mut ws,
+        3,
+        "card.add",
+        json!({"project": "web", "title": "fix login"}),
+    )
+    .await;
+    let rel = c["result"]["path"].as_str().unwrap().to_string();
+    let md = std::fs::read_to_string(h.ws.root.join(&rel).join("task.md")).unwrap();
+    assert!(md.contains("repo: src-app"), "{md}");
+
+    let opened = jc_server::worktree::ensure_card(&h.ws.root, &rel);
+    assert_eq!(opened.len(), 1);
+    let wt = opened[0].1.clone().unwrap();
+    assert!(wt.join("README").exists());
+    h.client.abort();
 }

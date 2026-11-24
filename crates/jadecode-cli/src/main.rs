@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! jadecode init <dir> [--name <n>]
-//! jadecode project add <name> [--repo <r>]
+//! jadecode project add <name> [--repo <r>] [--repo-path <dir>]
 //! jadecode card add <title> --project <p> [--path a,b,c] [--repo r:b] [--after <id>]...
 //! jadecode card list [--project <p>]
 //! jadecode card show <card>
@@ -27,7 +27,7 @@ fn usage() -> &'static str {
     "jadecode <command>
 
   init <dir> [--name <n>]                워크스페이스 만들기
-  project add <name> [--repo <r>]        프로젝트 만들기
+  project add <name> [--repo <r>] [--repo-path <dir>]  프로젝트 만들기(레포 폴더를 주면 카드마다 워크트리)
   card add <title> --project <p>         카드 만들기
        [--path a,b,c] [--repo r=branch] [--after <id>] [--parent <id>]
   card list [--project <p>]              카드 목록
@@ -68,6 +68,10 @@ fn main() -> Result<()> {
             .unwrap()
     };
     match args.first().map(|s| s.as_str()) {
+        Some("--version") | Some("-V") | Some("version") => {
+            println!("jadecode {}", jc_core::version::VERSION);
+            Ok(())
+        }
         Some("init") => {
             let dir = args.get(1).context("init <dir>")?;
             let name = flag_value(&args, "--name").unwrap_or_else(|| {
@@ -95,17 +99,21 @@ fn main() -> Result<()> {
                 Some("add") => {
                     let name = args.get(2).context("project add <name>")?;
                     let repo = flag_value(&args, "--repo");
+                    let repo_path = flag_value(&args, "--repo-path");
                     if let Some(sock) = server_up(&ws, &args) {
                         let out = rt().block_on(rpc_call(
                             &sock,
                             "project.add",
-                            json!({"name": name, "repo": repo}),
+                            json!({"name": name, "repo": repo, "repo_path": repo_path}),
                         ))?;
                         println!(
                             "{}",
                             ws.root.join(out["path"].as_str().unwrap_or("")).display()
                         );
                         return Ok(());
+                    }
+                    if repo_path.is_some() {
+                        bail!("--repo-path는 서버가 떠 있을 때 쓴다(jadecode server 또는 앱을 먼저 연다)");
                     }
                     let p = ws.add_project(name, repo.as_deref())?;
                     println!("{}", p.display());
@@ -255,17 +263,14 @@ fn main() -> Result<()> {
             let check_only = has_flag(&args, "--check");
             let rt = rt();
             rt.block_on(async move {
-                let cur = env!("CARGO_PKG_VERSION");
+                let cur = jc_core::version::VERSION;
                 let tag = match rt_fetch_latest_tag().await {
                     Ok(t) => t,
                     Err(e) => anyhow::bail!("최신 버전을 확인할 수 없다: {e}"),
                 };
                 let latest = tag.trim_start_matches('v');
-                // 0.1.2-alpha 처럼 -alpha 접미사가 붙는다. 앞 숫자만 비교한다.
-                let cur_num = cur.split('-').next().unwrap_or(cur);
-                let lat_num = latest.split('-').next().unwrap_or(latest);
                 println!("현재: {cur}   최신: {latest}");
-                if cur_num >= lat_num {
+                if !jc_core::version::is_newer(latest, cur) {
                     println!("이미 최신이다.");
                     return Ok::<(), anyhow::Error>(());
                 }

@@ -10,6 +10,7 @@ pub mod instances;
 pub mod intake;
 pub mod rpc;
 pub mod server;
+pub mod worktree;
 
 pub use instances::{InstanceInfo, InstanceManager, InstanceSpec, Role};
 pub use rpc::{error_codes, Method};

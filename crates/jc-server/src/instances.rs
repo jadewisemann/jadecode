@@ -1109,12 +1109,28 @@ pub fn build_brief(spec: &InstanceSpec) -> String {
     let mut s = String::new();
     match (&spec.card, spec.role) {
         (Some(card), _) => {
-            let p = spec.cwd.join("task.md");
+            // 워크트리에서 일하면 cwd는 레포다. 카드 문서는 카드 폴더에 있다.
+            let card_dir = spec
+                .bot_dir
+                .parent()
+                .and_then(|b| b.parent())
+                .map(|root| root.join(card))
+                .filter(|d| d.join("task.md").exists())
+                .unwrap_or_else(|| spec.cwd.clone());
+            let p = card_dir.join("task.md");
             let doc = std::fs::read_to_string(&p).unwrap_or_default();
             let cs = jc_core::taskmd::card_state(&doc).ok();
-            s.push_str(&format!(
-                "[jadecode] 카드 `{card}`에서 일을 시작한다. 카드 문서는 `task.md`(이 폴더)에 있다.\n\n"
-            ));
+            if card_dir == spec.cwd {
+                s.push_str(&format!(
+                    "[jadecode] 카드 `{card}`에서 일을 시작한다. 카드 문서는 `task.md`(이 폴더)에 있다.\n\n"
+                ));
+            } else {
+                s.push_str(&format!(
+                    "[jadecode] 카드 `{card}`에서 일을 시작한다. 지금 폴더(cwd)는 이 카드 전용 git 워크트리다(브랜치가 카드마다 따로다). \
+                     코드는 여기서 고치고 커밋한다. 카드 문서는 `{}`에 있다.\n\n",
+                    p.display()
+                ));
+            }
             if let Some(cs) = &cs {
                 s.push_str(&format!(
                     "현재 단계: **{}** / 상태: {}\n경로: {}\n\n",
@@ -1134,7 +1150,7 @@ pub fn build_brief(spec: &InstanceSpec) -> String {
             s.push_str("   답이 필요하면 `ask`로 묻고, 할 수 있는 일을 계속한다.\n");
             s.push_str("4. 이 폴더 안에서는 `cd` 대신 cwd 기준 경로를 쓰고, 파일 쓰기는 Write/Edit 도구를 쓴다.\n");
             if !spec.add_dirs.is_empty() {
-                s.push_str("\n추가로 열어 준 폴더(레포 워크트리):\n");
+                s.push_str("\n추가로 열어 준 폴더:\n");
                 for d in &spec.add_dirs {
                     s.push_str(&format!("- `{}`\n", d.display()));
                 }
@@ -1190,19 +1206,23 @@ pub fn build_spec(
     if !cwd.is_dir() {
         anyhow::bail!("cwd 없음: {}", cwd.display());
     }
-    // 카드의 레포 워크트리를 함께 연다.
+    // 카드의 레포 워크트리를 열고(없으면 만든다) 함께 연다.
+    let mut cwd = cwd;
     let mut add_dirs = vec![];
     if let Some(c) = &card {
-        let p = root.join(c).join("task.md");
-        if let Ok(content) = std::fs::read_to_string(&p) {
-            if let Ok(cs) = jc_core::taskmd::card_state(&content) {
-                for r in &cs.front.repos {
-                    let wt = root.join(c).join(&r.repo);
-                    if wt.is_dir() {
-                        add_dirs.push(wt);
-                    }
-                }
+        let mut trees = vec![];
+        for (repo, r) in crate::worktree::ensure_card(root, c) {
+            match r {
+                Ok(wt) => trees.push(wt),
+                Err(e) => eprintln!("jadecode: {c} 레포 {repo} 워크트리를 열지 못했다: {e}"),
             }
+        }
+        // 레포가 하나면 워커는 그 워크트리에서 일한다(git·빌드가 바로 된다). 카드 폴더는 함께 연다.
+        if trees.len() == 1 {
+            add_dirs.push(cwd.clone());
+            cwd = trees.remove(0);
+        } else {
+            add_dirs.extend(trees);
         }
     }
     for d in &bot.add_dirs {
