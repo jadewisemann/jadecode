@@ -59,7 +59,13 @@ pub struct BoardSnapshot {
     pub messages: Vec<EventRow>,
     /// 사람 답을 기다리는 권한 요청.
     pub pending_permissions: Vec<EventRow>,
+    /// 최근 이벤트 전부(카드 스레드·오케스트레이터 대화가 이력 뒤에 이어 붙인다).
+    #[serde(default)]
+    pub recent: Vec<EventRow>,
 }
+
+/// `recent`에 남기는 최대 이벤트 수.
+pub const RECENT_CAP: usize = 1000;
 
 /// 스냅숏 사본을 값싸게 만든다.
 ///
@@ -128,6 +134,31 @@ impl BoardSnapshot {
             .filter(|i| i.card.as_deref() == Some(card))
             .collect()
     }
+}
+
+/// 카드 상세 화면에 필요한 것.
+#[derive(Debug, Clone, Default)]
+pub struct CardDetail {
+    pub path: String,
+    pub markdown: String,
+    /// 카드 경로(거칠 단계).
+    pub stages: Vec<String>,
+    pub repos: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentInfo {
+    pub name: String,
+    pub installed: bool,
+    pub version: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BotInfo {
+    pub name: String,
+    pub agent: String,
+    pub model: String,
 }
 
 /// 서버 연결 설정.
@@ -330,6 +361,8 @@ impl Board {
                 pending.push(r.clone());
             }
         }
+        let mut recent: Vec<EventRow> = rows.clone();
+        recent.sort_by_key(|r| r.seq);
         let messages: Vec<EventRow> = rows
             .into_iter()
             .filter(|r| {
@@ -347,6 +380,7 @@ impl Board {
             head_seq: head,
             messages,
             pending_permissions: pending,
+            recent,
         };
         Ok(())
     }
@@ -368,6 +402,11 @@ impl Board {
                 .await
             {
                 Ok(Some(Ok(Message::Text(t)))) => t.to_string(),
+                Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => {
+                    // 서버가 닫았다. 다시 붙는 것은 부르는 쪽이 한다.
+                    self.ws = None;
+                    return None;
+                }
                 _ => return None,
             };
             let v: Value = serde_json::from_str(&msg).ok()?;
@@ -404,6 +443,13 @@ impl Board {
     /// 이벤트 하나를 스냅숏에 반영한다(순수 함수 — 테스트 대상).
     pub fn apply(&mut self, ev: &EventRow) {
         self.snapshot.head_seq = self.snapshot.head_seq.max(ev.seq);
+        if ev.kind != "card.file_changed" {
+            self.snapshot.recent.push(ev.clone());
+            if self.snapshot.recent.len() > RECENT_CAP {
+                let cut = self.snapshot.recent.len() - RECENT_CAP;
+                self.snapshot.recent.drain(0..cut);
+            }
+        }
         match ev.kind.as_str() {
             "card.created" => {
                 let id = ev.body["id"].as_str().unwrap_or("").to_string();
@@ -496,6 +542,16 @@ impl Board {
                     self.snapshot.pending_permissions.retain(|p| p.seq != s);
                 }
             }
+            "project.created" => {
+                let slug = ev.body["slug"].as_str().unwrap_or("").to_string();
+                if !slug.is_empty() && !self.snapshot.projects.iter().any(|p| p.slug == slug) {
+                    self.snapshot.projects.push(Project {
+                        name: ev.body["name"].as_str().unwrap_or(&slug).to_string(),
+                        slug,
+                        cards: 0,
+                    });
+                }
+            }
             k if k.starts_with("msg.") || k == "instance.output" => {
                 if k == "msg.report" && ev.body["auto"].as_bool() == Some(true) {
                     return;
@@ -532,20 +588,179 @@ impl Board {
         Ok(v["stage"].as_str().unwrap_or("").to_string())
     }
 
+    /// 프로젝트의 오케스트레이터에게 보낸다. 떠 있지 않으면 먼저 띄운다.
     pub async fn send_to_orchestrator(&mut self, project: &str, text: &str) -> Result<()> {
-        // 프로젝트의 오케스트레이터 인스턴스를 찾아 보낸다.
-        let inst = self
-            .snapshot
-            .instances
-            .iter()
-            .find(|i| i.role == "orchestrator" && i.project == project)
-            .map(|i| i.id.clone());
-        let Some(inst) = inst else {
-            anyhow::bail!("{project}의 오케스트레이터가 없다. `jadecode instance start orchestrator --project {project}`")
-        };
+        let inst = self.orchestrator_of(project).await?;
         self.call("instance.send", json!({"instance": inst, "text": text}))
             .await?;
         Ok(())
+    }
+
+    /// 오케스트레이터 인스턴스 id. 없으면 띄운다.
+    pub async fn orchestrator_of(&mut self, project: &str) -> Result<String> {
+        let list = self.call("instances.list", json!({})).await?;
+        let found = list["instances"].as_array().and_then(|a| {
+            a.iter()
+                .find(|i| i["role"] == "orchestrator" && i["project"] == project)
+                .and_then(|i| i["id"].as_str().map(String::from))
+        });
+        if let Some(id) = found {
+            return Ok(id);
+        }
+        let v = self
+            .call(
+                "instance.start",
+                json!({"role":"orchestrator","project":project,"bot":"orchestrator"}),
+            )
+            .await
+            .context("오케스트레이터를 띄우지 못했다")?;
+        v["instance"]["id"]
+            .as_str()
+            .map(String::from)
+            .context("instance.start 응답에 id가 없다")
+    }
+
+    /// 인스턴스에 직접 말한다.
+    pub async fn send_to_instance(&mut self, instance: &str, text: &str) -> Result<()> {
+        self.call("instance.send", json!({"instance": instance, "text": text}))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn stop_instance(&mut self, instance: &str) -> Result<()> {
+        self.call("instance.stop", json!({"instance": instance}))
+            .await?;
+        Ok(())
+    }
+
+    /// 새 프로젝트. 돌려주는 값은 slug.
+    pub async fn add_project(&mut self, name: &str, repo: Option<&str>) -> Result<String> {
+        let mut p = json!({"name": name});
+        if let Some(r) = repo.filter(|r| !r.trim().is_empty()) {
+            p["repo"] = json!(r.trim());
+        }
+        let v = self.call("project.add", p).await?;
+        let slug = v["slug"].as_str().unwrap_or("").to_string();
+        // projects.list는 이벤트로 오지 않으므로 바로 넣는다.
+        if !slug.is_empty() && !self.snapshot.projects.iter().any(|p| p.slug == slug) {
+            self.snapshot.projects.push(Project {
+                slug: slug.clone(),
+                name: name.to_string(),
+                cards: 0,
+            });
+        }
+        Ok(slug)
+    }
+
+    /// 새 카드. 돌려주는 값은 카드 경로(`work/<p>/<c>`).
+    pub async fn add_card(
+        &mut self,
+        project: &str,
+        title: &str,
+        body: Option<&str>,
+    ) -> Result<String> {
+        let mut p = json!({"project": project, "title": title});
+        if let Some(b) = body.filter(|b| !b.trim().is_empty()) {
+            p["body"] = json!(b);
+        }
+        let v = self.call("card.add", p).await?;
+        v["path"]
+            .as_str()
+            .map(String::from)
+            .context("card.add 응답에 path가 없다")
+    }
+
+    /// 카드 상세(task.md 원문 + 앞머리).
+    pub async fn card_detail(&mut self, card: &str) -> Result<CardDetail> {
+        let v = self.call("card.get", json!({"card": card})).await?;
+        let stages = v["front"]["path"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let repos = v["front"]["repos"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|r| r["name"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(CardDetail {
+            path: v["path"].as_str().unwrap_or(card).to_string(),
+            markdown: v["markdown"].as_str().unwrap_or("").to_string(),
+            stages,
+            repos,
+        })
+    }
+
+    /// 주제의 지난 이벤트(오래된 것부터).
+    pub async fn history(&mut self, topics: &[String], limit: u64) -> Result<Vec<EventRow>> {
+        let v = self
+            .call("events.tail", json!({"topics": topics, "limit": limit}))
+            .await?;
+        let mut rows: Vec<EventRow> = v["events"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        rows.sort_by_key(|r| r.seq);
+        Ok(rows)
+    }
+
+    /// 에이전트 백엔드 설치 상태.
+    pub async fn agents(&mut self) -> Result<Vec<AgentInfo>> {
+        let v = self.call("agents.list", json!({})).await?;
+        Ok(v["agents"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| AgentInfo {
+                name: a["agent"]
+                    .as_str()
+                    .or_else(|| a["name"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                installed: a["available"].as_bool().unwrap_or(false),
+                version: a["version"].as_str().unwrap_or("").to_string(),
+                detail: a["binary"]
+                    .as_str()
+                    .or_else(|| a["error"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+            .collect())
+    }
+
+    /// 봇 정의 목록(이름·에이전트).
+    pub async fn bots(&mut self) -> Result<Vec<BotInfo>> {
+        let v = self.call("bots.list", json!({})).await?;
+        Ok(v["bots"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|b| BotInfo {
+                name: b["name"].as_str().unwrap_or("").to_string(),
+                agent: b["agent"].as_str().unwrap_or("").to_string(),
+                model: b["model"].as_str().unwrap_or("").to_string(),
+            })
+            .collect())
+    }
+
+    /// 서버가 쓰는 워크스페이스 절대 경로.
+    pub async fn workspace(&mut self) -> Result<PathBuf> {
+        let v = self.call("server.info", json!({})).await?;
+        v["workspace"]
+            .as_str()
+            .map(PathBuf::from)
+            .context("server.info에 workspace가 없다")
     }
 
     pub async fn resolve_permission(&mut self, seq: u64, allow: bool, message: &str) -> Result<()> {
@@ -557,18 +772,24 @@ impl Board {
         Ok(())
     }
 
+    /// 워커를 띄우고 인스턴스 id를 돌려준다.
     pub async fn start_worker(
         &mut self,
         project: &str,
         card: &str,
         agent: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let mut p = json!({"role":"worker","project":project,"card":card,"bot":"worker"});
         if let Some(a) = agent {
             p["agent"] = json!(a);
         }
-        self.call("instance.start", p).await?;
-        Ok(())
+        let v = self.call("instance.start", p).await?;
+        Ok(v["instance"]["id"].as_str().unwrap_or("").to_string())
+    }
+
+    /// 연결이 살아 있는가(끊기면 구독 스레드가 다시 붙는다).
+    pub fn is_connected(&self) -> bool {
+        self.ws.is_some()
     }
 
     pub async fn card_markdown(&mut self, card: &str) -> Result<String> {

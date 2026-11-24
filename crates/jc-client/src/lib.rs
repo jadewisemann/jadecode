@@ -9,6 +9,7 @@ pub mod format;
 pub mod local;
 #[cfg(feature = "ui")]
 pub mod ui;
+pub mod view_model;
 
 pub use board::{Board, BoardSnapshot, Card, Connection, SnapshotHandle};
 pub use local::{ensure_backend, Backend, BackendKind};

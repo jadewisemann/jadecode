@@ -1283,6 +1283,25 @@ async fn instance_send(sh: &Shared, params: &Value) -> Result<Value, Error> {
         .send(&inst, &text)
         .await
         .map_err(|e| Error::refused(e.to_string(), "instance"))?;
+    // 사람이 보낸 말도 이력으로 남긴다(늦게 봐도 대화 앞뒤가 이어지도록).
+    if let Some(info) = sh.instances.list().await.into_iter().find(|i| i.id == inst) {
+        let topic = match &info.card {
+            Some(c) => card_topic(c),
+            None => format!("project/{}", info.project),
+        };
+        let from = params
+            .get("from")
+            .and_then(|v| v.as_str())
+            .unwrap_or("human")
+            .to_string();
+        let _ = sh
+            .append(vec![NewEvent::new(
+                topic,
+                "msg.human",
+                json!({"instance": inst, "text": text, "from": from}),
+            )])
+            .await;
+    }
     Ok(json!({"instance": inst, "sent": true}))
 }
 
