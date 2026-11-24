@@ -93,7 +93,26 @@ pub enum Method {
     BotsList,
     AgentsList,
     PolicyGet,
+    /// 수집함·커넥터(외부 사이클) 메서드. 이름을 그대로 들고 있다.
+    Ext(&'static str),
 }
+
+/// 외부 사이클 메서드 이름.
+pub const EXT_METHODS: &[&str] = &[
+    "intake.add",
+    "intake.list",
+    "intake.get",
+    "intake.triage",
+    "intake.close",
+    "intake.reply",
+    "intake.sync_github",
+    "connectors.list",
+    "connectors.presets",
+    "connectors.save",
+    "connectors.remove",
+    "connectors.sync",
+    "connectors.test",
+];
 
 impl Method {
     pub fn parse(s: &str) -> Option<Self> {
@@ -121,12 +140,12 @@ impl Method {
             "bots.list" => Method::BotsList,
             "agents.list" => Method::AgentsList,
             "policy.get" => Method::PolicyGet,
-            _ => return None,
+            other => Method::Ext(EXT_METHODS.iter().find(|m| **m == other)?),
         })
     }
 
-    pub fn names() -> &'static [&'static str] {
-        &[
+    pub fn names() -> Vec<&'static str> {
+        let mut v: Vec<&'static str> = vec![
             "server.info",
             "server.stats",
             "events.append",
@@ -150,7 +169,9 @@ impl Method {
             "bots.list",
             "agents.list",
             "policy.get",
-        ]
+        ];
+        v.extend_from_slice(EXT_METHODS);
+        v
     }
 }
 
@@ -160,7 +181,7 @@ mod tests {
 
     #[test]
     fn names_parse() {
-        for n in Method::names() {
+        for n in &Method::names() {
             assert!(Method::parse(n).is_some(), "{n}");
         }
         assert!(Method::parse("nope").is_none());

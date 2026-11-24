@@ -809,6 +809,7 @@ fn is_wake_kind(kind: &str) -> bool {
             | "card.stage_changed"
             | "card.file_missing"
             | "card.state_change_rejected"
+            | "intake.received"
     )
 }
 
@@ -833,6 +834,13 @@ fn digest_text(project: &str, picked: &[(u64, String, Value)]) -> String {
             compact_body(b)
         ));
     }
+    if picked.iter().any(|p| p.1 == "intake.received") {
+        s.push_str(
+            "\n새 수집 항목(intake.received)이 있다. `intake_get`으로 원문을 읽고 `intake_triage`로 분류하라: \
+             코드 작업이면 decision=card(제목, 2~5문장 brief, done_when을 직접 써서 원문 없이도 일할 수 있게), \
+             할 일이 아니면 decision=archive. 카드를 만들면 필요할 때 `instance_start`로 워커를 붙여라.",
+        );
+    }
     s.push_str(&format!(
         "\n필요하면 `send`·`reply`로 인스턴스에 지시하고, 사람 결정이 필요하면 `escalate`를 써라. 마지막 seq: {}",
         picked.last().map(|p| p.0).unwrap_or(0)
@@ -844,7 +852,7 @@ fn compact_body(b: &Value) -> String {
     let pick = |k: &str| b.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let mut parts = vec![];
     for k in [
-        "status", "summary", "question", "message", "text", "from", "to",
+        "id", "source", "title", "status", "summary", "question", "message", "text", "from", "to",
     ] {
         let v = pick(k);
         if !v.is_empty() {

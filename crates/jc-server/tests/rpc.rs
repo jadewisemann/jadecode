@@ -390,3 +390,144 @@ async fn long_socket_path_fails_with_clear_message() {
     let msg = format!("{err:#}");
     assert!(msg.contains("너무 길다"), "{msg}");
 }
+
+/// 외부 사이클 전체: 커넥터(MCP) 동기화 → 수집 → 분류(카드) → 카드 끝 → 회신 대기 → 답장 → 닫힘.
+#[tokio::test(flavor = "multi_thread")]
+async fn intake_cycle_through_mcp_connector() {
+    if std::process::Command::new("python3")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let (h, _cards) = setup(&["refine", "implement"]).await;
+    let mut ws = connect(&h.socket).await;
+
+    // Slack 서버 흉내: 채널 기록 + 스레드 답장(받은 답장을 파일에 남긴다).
+    let fake = h.dir.join("fake_slack.py");
+    let replies = h.dir.join("replies.txt");
+    std::fs::write(
+        &fake,
+        format!(
+            r#"import sys, json
+for line in sys.stdin:
+    m = json.loads(line)
+    if "id" not in m:
+        continue
+    meth = m["method"]
+    if meth == "initialize":
+        r = {{"protocolVersion": "2025-06-18", "capabilities": {{}}}}
+    elif meth == "tools/list":
+        r = {{"tools": [{{"name": "slack_get_channel_history"}}, {{"name": "slack_reply_to_thread"}}]}}
+    elif m["params"]["name"] == "slack_get_channel_history":
+        msgs = [{{"ts": "1.1", "user": "U1", "text": "결제 실패 고쳐 주세요\n상세"}}, {{"ts": "1.2", "bot_id": "B", "text": "봇"}}]
+        r = {{"content": [{{"type": "text", "text": json.dumps({{"ok": True, "messages": msgs}})}}]}}
+    else:
+        a = m["params"]["arguments"]
+        open({replies:?}, "a").write(a["thread_ts"] + "|" + a["text"] + "\n")
+        r = {{"content": [{{"type": "text", "text": "{{}}"}}]}}
+    print(json.dumps({{"jsonrpc": "2.0", "id": m["id"], "result": r}}), flush=True)
+"#,
+            replies = replies.display().to_string()
+        ),
+    )
+    .unwrap();
+    let r = call(
+        &mut ws,
+        1,
+        "connectors.save",
+        json!({"name":"slack","project":"p1","preset":"slack",
+               "fields":{"token":"xoxb-test-token","team_id":"T1","channel_id":"C1"}}),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "{r}");
+    // 프리셋의 npx 대신 가짜 서버를 쓰도록 설정 파일을 고친다.
+    let cfg = h.dir.join(".jadecode/connectors.toml");
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    let text = text
+        .replace("command = \"npx\"", "command = \"python3\"")
+        .replace(
+            "args = [\"-y\", \"@modelcontextprotocol/server-slack\"]",
+            &format!("args = [{:?}]", fake.display().to_string()),
+        );
+    std::fs::write(&cfg, text).unwrap();
+
+    let r = call(&mut ws, 2, "connectors.list", json!({})).await;
+    assert_eq!(
+        r["result"]["connectors"][0]["env"]["SLACK_BOT_TOKEN"],
+        "xoxb…"
+    );
+
+    let r = call(&mut ws, 3, "connectors.sync", json!({"name":"slack"})).await;
+    assert_eq!(r["result"]["results"][0]["added"], 1, "{r}");
+    // 두 번 동기화해도 같은 메시지는 다시 들어오지 않는다.
+    let r = call(&mut ws, 4, "connectors.sync", json!({"name":"slack"})).await;
+    assert_eq!(r["result"]["results"][0]["added"], 0, "{r}");
+
+    let r = call(&mut ws, 5, "intake.list", json!({"project":"p1"})).await;
+    let items = r["result"]["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["title"], "결제 실패 고쳐 주세요");
+    assert_eq!(items[0]["state"], "new");
+    let id = items[0]["id"].as_str().unwrap().to_string();
+
+    let r = call(
+        &mut ws,
+        6,
+        "intake.triage",
+        json!({"id": id, "decision":"card", "title":"결제 실패 수정",
+               "brief":"결제 API가 실패할 때 재시도한다.", "done_when":"테스트 통과"}),
+    )
+    .await;
+    let card = r["result"]["card"].as_str().unwrap().to_string();
+    let md = std::fs::read_to_string(h.dir.join(&card).join("task.md")).unwrap();
+    assert!(md.contains("결제 API가 실패할 때 재시도한다."));
+    assert!(md.contains("slack.com/archives/C1/p11"));
+
+    let r = call(
+        &mut ws,
+        7,
+        "card.set_status",
+        json!({"card": card, "status":"done"}),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "{r}");
+    let r = call(&mut ws, 8, "intake.list", json!({"project":"p1"})).await;
+    assert_eq!(r["result"]["items"][0]["state"], "reply_pending");
+
+    let r = call(
+        &mut ws,
+        9,
+        "intake.reply",
+        json!({"id": id, "text":"고쳤습니다"}),
+    )
+    .await;
+    assert_eq!(r["result"]["sent"], true, "{r}");
+    assert_eq!(
+        std::fs::read_to_string(&replies).unwrap(),
+        "1.1|고쳤습니다\n"
+    );
+    let r = call(&mut ws, 10, "intake.list", json!({"project":"p1"})).await;
+    assert_eq!(r["result"]["items"][0]["state"], "closed");
+
+    // 직접 넣은 메모는 보관할 수 있다.
+    let r = call(
+        &mut ws,
+        11,
+        "intake.add",
+        json!({"project":"p1","title":"메모"}),
+    )
+    .await;
+    let mid = r["result"]["id"].as_str().unwrap().to_string();
+    let r = call(
+        &mut ws,
+        12,
+        "intake.triage",
+        json!({"id": mid, "decision":"archive"}),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "{r}");
+    h.client.abort();
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

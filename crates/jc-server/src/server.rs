@@ -432,6 +432,10 @@ where
         agent_bins: std::sync::Mutex::new(config.bins.clone()),
     });
 
+    if std::env::var("JADECODE_NO_CONNECTORS").is_err() {
+        spawn_connector_loop(shared.clone());
+    }
+
     match bound {
         Bound::Tcp { listener, .. } => loop {
             let (sock, _) = listener.accept().await?;
@@ -687,6 +691,16 @@ where
                 let sh2 = sh.clone();
                 tokio::spawn(async move {
                     let resp = match card_add(sh2, &params).await {
+                        Ok(v) => rpc::ok(&id, v),
+                        Err(e) => rpc::err(&id, e),
+                    };
+                    let _ = out.send(resp).await;
+                });
+            }
+            Method::Ext(name) => {
+                let sh2 = sh.clone();
+                tokio::spawn(async move {
+                    let resp = match ext_call(sh2, name, &params).await {
                         Ok(v) => rpc::ok(&id, v),
                         Err(e) => rpc::err(&id, e),
                     };
@@ -1438,7 +1452,7 @@ fn policy_get(sh: &Shared) -> Result<Value, Error> {
 // ---------- 생성 RPC(서버가 돌 때 CLI가 쓴다) ----------
 
 /// `card.add {project, title, path?, repos?, depends_on?, parent?, body?}`
-async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
+pub(crate) async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
     let project = require_str(params, "project")?;
     let title = require_str(params, "title")?;
     let path: Vec<String> = params["path"]
@@ -1576,6 +1590,117 @@ async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
         )])
         .await?;
     Ok(json!({"path": rel, "slug": slug, "seqs": seqs}))
+}
+
+/// 외부 사이클(수집함·커넥터) RPC.
+async fn ext_call(sh: Arc<Shared>, name: &str, params: &Value) -> Result<Value, Error> {
+    use crate::{connectors, intake};
+    let internal = |e: anyhow::Error| Error::internal(format!("{e:#}"));
+    match name {
+        "intake.add" => intake::add(sh, params).await,
+        "intake.list" => intake::list(&sh, params),
+        "intake.get" => intake::get(&sh, params),
+        "intake.triage" => intake::triage(sh, params).await,
+        "intake.close" => intake::close(sh, params).await,
+        "intake.reply" => intake::reply(sh, params).await,
+        "intake.sync_github" => intake::sync_github(sh, params).await,
+        "connectors.presets" => Ok(json!({"presets": connectors::presets()})),
+        "connectors.list" => {
+            let list = connectors::load(&sh.root).map_err(internal)?;
+            let rows: Vec<Value> = list
+                .iter()
+                .map(|c| {
+                    let mut v = c.redacted();
+                    v["status"] = connectors::status_of(&c.name);
+                    v
+                })
+                .collect();
+            Ok(
+                json!({"connectors": rows, "path": connectors::config_path(&sh.root).display().to_string()}),
+            )
+        }
+        "connectors.save" => {
+            let name = require_str(params, "name")?;
+            let project = require_str(params, "project")?;
+            let preset = require_str(params, "preset")?;
+            if !sh.root.join("work").join(&project).is_dir() {
+                return Err(Error::invalid_params(format!("no project {project}")));
+            }
+            let fields = params["fields"].as_object().cloned().unwrap_or_default();
+            let c = connectors::from_preset(&preset, &name, &project, &fields)
+                .map_err(|e| Error::invalid_params(format!("{e:#}")))?;
+            let mut list = connectors::load(&sh.root).map_err(internal)?;
+            list.retain(|x| x.name != name);
+            list.push(c);
+            connectors::save(&sh.root, &list).map_err(internal)?;
+            Ok(json!({"saved": name}))
+        }
+        "connectors.remove" => {
+            let name = require_str(params, "name")?;
+            let mut list = connectors::load(&sh.root).map_err(internal)?;
+            list.retain(|x| x.name != name);
+            connectors::save(&sh.root, &list).map_err(internal)?;
+            Ok(json!({"removed": name}))
+        }
+        "connectors.test" => {
+            let name = require_str(params, "name")?;
+            let list = connectors::load(&sh.root).map_err(internal)?;
+            let c = list
+                .iter()
+                .find(|c| c.name == name)
+                .ok_or_else(|| Error::invalid_params(format!("no connector {name}")))?;
+            let tools = connectors::test(c)
+                .await
+                .map_err(|e| Error::refused(format!("{e:#}"), "test_failed"))?;
+            Ok(json!({"ok": true, "tools": tools}))
+        }
+        "connectors.sync" => {
+            let only = params.get("name").and_then(|v| v.as_str());
+            let list = connectors::load(&sh.root).map_err(internal)?;
+            let mut out = vec![];
+            for c in list
+                .iter()
+                .filter(|c| only.map(|n| n == c.name).unwrap_or(c.is_enabled()))
+            {
+                let r = intake::sync_connector(sh.clone(), c).await;
+                connectors::record(&c.name, &r);
+                out.push(match r {
+                    Ok(n) => json!({"name": c.name, "added": n}),
+                    Err(e) => json!({"name": c.name, "error": e.message}),
+                });
+            }
+            Ok(json!({"results": out}))
+        }
+        other => Err(Error::new(
+            rpc::error_codes::METHOD_NOT_FOUND,
+            format!("no method {other}"),
+        )),
+    }
+}
+
+/// 켜진 커넥터를 주기마다 동기화한다(설정 파일은 매번 다시 읽는다).
+fn spawn_connector_loop(sh: Arc<Shared>) {
+    tokio::spawn(async move {
+        let mut last: std::collections::HashMap<String, Instant> = Default::default();
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let Ok(list) = crate::connectors::load(&sh.root) else {
+                continue;
+            };
+            for c in list.iter().filter(|c| c.is_enabled()) {
+                let due = last
+                    .get(&c.name)
+                    .map(|t| t.elapsed() >= Duration::from_secs(c.interval_sec.max(15)))
+                    .unwrap_or(true);
+                if !due {
+                    continue;
+                }
+                last.insert(c.name.clone(), Instant::now());
+                let r = crate::intake::sync_connector(sh.clone(), c).await;
+                crate::connectors::record(&c.name, &r);
+            }
+        }
+    });
 }
 
 /// `agents.list` — 지원 백엔드와 설치 여부.

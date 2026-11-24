@@ -161,6 +161,48 @@ pub struct BotInfo {
     pub model: String,
 }
 
+/// 수집 항목(외부 사이클).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct IntakeItem {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub connector: String,
+    /// new | carded | archived | reply_pending | closed
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub card: Option<String>,
+    #[serde(default)]
+    pub seq: u64,
+    #[serde(default)]
+    pub ts: u64,
+}
+
+/// 커넥터 한 줄(비밀은 서버가 가린다).
+#[derive(Debug, Clone, Default)]
+pub struct ConnectorInfo {
+    pub name: String,
+    pub project: String,
+    pub preset: String,
+    pub enabled: bool,
+    pub can_reply: bool,
+    /// 마지막 동기화: (성공, 설명)
+    pub status: Option<(bool, String)>,
+}
+
 /// 서버 연결 설정.
 #[derive(Debug, Clone)]
 pub struct Connection {
@@ -752,6 +794,144 @@ impl Board {
                 model: b["model"].as_str().unwrap_or("").to_string(),
             })
             .collect())
+    }
+
+    // ---------- 외부 사이클 ----------
+
+    pub async fn intake_list(&mut self, project: Option<&str>) -> Result<Vec<IntakeItem>> {
+        let mut p = json!({});
+        if let Some(pr) = project {
+            p["project"] = json!(pr);
+        }
+        let v = self.call("intake.list", p).await?;
+        Ok(v["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|x| serde_json::from_value(x).ok())
+            .collect())
+    }
+
+    pub async fn intake_add(&mut self, project: &str, title: &str, body: &str) -> Result<String> {
+        let v = self
+            .call(
+                "intake.add",
+                json!({"project": project, "title": title, "body": body, "source": "memo", "from": "나"}),
+            )
+            .await?;
+        Ok(v["id"].as_str().unwrap_or("").to_string())
+    }
+
+    /// 카드로 만들거나(`brief`가 카드 본문) 보관한다. 카드면 경로를 돌려준다.
+    pub async fn intake_triage(
+        &mut self,
+        id: &str,
+        decision: &str,
+        title: Option<&str>,
+        brief: Option<&str>,
+    ) -> Result<Option<String>> {
+        let mut p = json!({"id": id, "decision": decision});
+        if let Some(t) = title {
+            p["title"] = json!(t);
+        }
+        if let Some(b) = brief {
+            p["brief"] = json!(b);
+        }
+        let v = self.call("intake.triage", p).await?;
+        Ok(v["card"].as_str().map(String::from))
+    }
+
+    pub async fn intake_close(&mut self, id: &str) -> Result<()> {
+        self.call("intake.close", json!({"id": id})).await?;
+        Ok(())
+    }
+
+    pub async fn intake_reply(&mut self, id: &str, text: &str) -> Result<()> {
+        self.call("intake.reply", json!({"id": id, "text": text}))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn connectors(&mut self) -> Result<Vec<ConnectorInfo>> {
+        let v = self.call("connectors.list", json!({})).await?;
+        Ok(v["connectors"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| ConnectorInfo {
+                name: c["name"].as_str().unwrap_or("").to_string(),
+                project: c["project"].as_str().unwrap_or("").to_string(),
+                preset: c["preset"].as_str().unwrap_or("").to_string(),
+                enabled: c["enabled"].as_bool().unwrap_or(true),
+                can_reply: !c["reply"].is_null(),
+                status: if c["status"].is_null() {
+                    None
+                } else if c["status"]["ok"].as_bool() == Some(true) {
+                    Some((
+                        true,
+                        format!("새 항목 {}개", c["status"]["added"].as_u64().unwrap_or(0)),
+                    ))
+                } else {
+                    Some((
+                        false,
+                        c["status"]["error"].as_str().unwrap_or("실패").to_string(),
+                    ))
+                },
+            })
+            .collect())
+    }
+
+    pub async fn connector_save(
+        &mut self,
+        name: &str,
+        project: &str,
+        preset: &str,
+        fields: Value,
+    ) -> Result<()> {
+        self.call(
+            "connectors.save",
+            json!({"name": name, "project": project, "preset": preset, "fields": fields}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn connector_remove(&mut self, name: &str) -> Result<()> {
+        self.call("connectors.remove", json!({"name": name}))
+            .await?;
+        Ok(())
+    }
+
+    /// 동기화. 돌려주는 값은 (새 항목 수, 오류들).
+    pub async fn connector_sync(&mut self, name: Option<&str>) -> Result<(u64, Vec<String>)> {
+        let mut p = json!({});
+        if let Some(n) = name {
+            p["name"] = json!(n);
+        }
+        let v = self.call("connectors.sync", p).await?;
+        let mut added = 0;
+        let mut errs = vec![];
+        for r in v["results"].as_array().cloned().unwrap_or_default() {
+            added += r["added"].as_u64().unwrap_or(0);
+            if let Some(e) = r["error"].as_str() {
+                errs.push(format!("{}: {e}", r["name"].as_str().unwrap_or("?")));
+            }
+        }
+        Ok((added, errs))
+    }
+
+    pub async fn connector_test(&mut self, name: &str) -> Result<Vec<String>> {
+        let v = self.call("connectors.test", json!({"name": name})).await?;
+        Ok(v["tools"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     /// 서버가 쓰는 워크스페이스 절대 경로.
