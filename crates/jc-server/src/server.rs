@@ -1485,7 +1485,7 @@ pub(crate) async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, E
                 .map(|s| s.to_string())
                 .collect()
         });
-    let repos: Vec<jc_core::taskmd::RepoRef> = params["repos"]
+    let mut repos: Vec<jc_core::taskmd::RepoRef> = params["repos"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -1493,6 +1493,17 @@ pub(crate) async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, E
                 .collect()
         })
         .unwrap_or_default();
+    // 레포를 안 정하면 프로젝트의 레포를 쓴다(브랜치는 워크트리를 열 때 카드 이름으로 정한다).
+    if repos.is_empty() {
+        repos = crate::worktree::project_repos(&sh.root, &project)
+            .into_iter()
+            .map(|r| jc_core::taskmd::RepoRef {
+                repo: r.name,
+                branch: String::new(),
+                base: String::new(),
+            })
+            .collect();
+    }
     let depends_on: Vec<String> = params["depends_on"]
         .as_array()
         .map(|a| {
@@ -1554,10 +1565,38 @@ pub(crate) async fn card_add(sh: Arc<Shared>, params: &Value) -> Result<Value, E
 /// `project.add {name, repo?}`
 async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
     let name = require_str(params, "name")?;
+    // `repo_path`: 사람 컴퓨터의 레포 폴더. 카드마다 여기서 워크트리를 연다.
+    let repo_path = params
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let s = match (s.strip_prefix("~/"), std::env::var_os("HOME")) {
+                (Some(rest), Some(h)) => std::path::PathBuf::from(h).join(rest),
+                _ => std::path::PathBuf::from(s),
+            };
+            std::fs::canonicalize(&s).unwrap_or(s)
+        });
+    if let Some(p) = &repo_path {
+        if !crate::worktree::is_git_repo(p) {
+            return Err(Error::invalid_params(format!(
+                "not a git repository: {}",
+                p.display()
+            )));
+        }
+    }
     let repo = params
         .get("repo")
         .and_then(|v| v.as_str())
-        .map(String::from);
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            repo_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+        });
     let root = sh.root.clone();
     let slug: String = name
         .chars()
@@ -1586,9 +1625,14 @@ async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
     tokio::fs::create_dir_all(&abs)
         .await
         .map_err(|e| Error::internal(e.to_string()))?;
-    let repos = match &repo {
-        Some(r) => format!("[[repos]]\nname = \"{r}\"\n"),
-        None => String::new(),
+    let repos = match (&repo, &repo_path) {
+        (Some(r), Some(p)) => format!(
+            "[[repos]]\nname = {}\npath = {}\n",
+            toml::Value::String(r.clone()),
+            toml::Value::String(p.display().to_string())
+        ),
+        (Some(r), None) => format!("[[repos]]\nname = {}\n", toml::Value::String(r.clone())),
+        _ => String::new(),
     };
     tokio::fs::write(
         abs.join("project.toml"),
@@ -1603,7 +1647,8 @@ async fn project_add(sh: Arc<Shared>, params: &Value) -> Result<Value, Error> {
         .append(vec![NewEvent::new(
             project_topic(&rel),
             "project.created",
-            json!({"name":name,"slug":slug,"repos":repo}),
+            json!({"name":name,"slug":slug,"repos":repo,
+                   "repo_path": repo_path.as_ref().map(|p| p.display().to_string())}),
         )])
         .await?;
     Ok(json!({"path": rel, "slug": slug, "seqs": seqs}))

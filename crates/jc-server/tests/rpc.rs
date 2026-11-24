@@ -550,3 +550,66 @@ for line in sys.stdin:
     h.client.abort();
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_with_repo_path_gives_cards_a_worktree() {
+    let (h, _cards) = setup(&["implement"]).await;
+    let mut ws = connect(&h.socket).await;
+    // 사람 컴퓨터의 레포를 흉내 낸다.
+    let src = h.ws.root.join("src-app");
+    std::fs::create_dir_all(&src).unwrap();
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&src)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .status()
+            .unwrap();
+        assert!(st.success());
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("README"), "x").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "init"]);
+
+    let bad = call(
+        &mut ws,
+        1,
+        "project.add",
+        json!({"name": "nope", "repo_path": h.ws.root.join("missing").display().to_string()}),
+    )
+    .await;
+    assert!(bad["error"].is_object(), "{bad}");
+
+    let p = call(
+        &mut ws,
+        2,
+        "project.add",
+        json!({"name": "web", "repo_path": src.display().to_string()}),
+    )
+    .await;
+    assert_eq!(p["result"]["slug"], "web", "{p}");
+    let toml = std::fs::read_to_string(h.ws.root.join("work/web/project.toml")).unwrap();
+    assert!(toml.contains("name = \"src-app\""), "{toml}");
+
+    let c = call(
+        &mut ws,
+        3,
+        "card.add",
+        json!({"project": "web", "title": "fix login"}),
+    )
+    .await;
+    let rel = c["result"]["path"].as_str().unwrap().to_string();
+    let md = std::fs::read_to_string(h.ws.root.join(&rel).join("task.md")).unwrap();
+    assert!(md.contains("repo: src-app"), "{md}");
+
+    let opened = jc_server::worktree::ensure_card(&h.ws.root, &rel);
+    assert_eq!(opened.len(), 1);
+    let wt = opened[0].1.clone().unwrap();
+    assert!(wt.join("README").exists());
+    h.client.abort();
+}

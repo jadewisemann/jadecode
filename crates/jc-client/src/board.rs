@@ -684,10 +684,11 @@ impl Board {
     }
 
     /// 새 프로젝트. 돌려주는 값은 slug.
-    pub async fn add_project(&mut self, name: &str, repo: Option<&str>) -> Result<String> {
+    /// 프로젝트를 만든다. `repo_path`는 사람 컴퓨터의 git 레포 폴더(선택).
+    pub async fn add_project(&mut self, name: &str, repo_path: Option<&str>) -> Result<String> {
         let mut p = json!({"name": name});
-        if let Some(r) = repo.filter(|r| !r.trim().is_empty()) {
-            p["repo"] = json!(r.trim());
+        if let Some(r) = repo_path.filter(|r| !r.trim().is_empty()) {
+            p["repo_path"] = json!(r.trim());
         }
         let v = self.call("project.add", p).await?;
         let slug = v["slug"].as_str().unwrap_or("").to_string();

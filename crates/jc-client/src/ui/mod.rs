@@ -1032,7 +1032,8 @@ impl Workspace {
             .multiline(8)
         });
         let project_name = cx.new(|cx| TextInput::new(cx, "프로젝트 이름 (영문·숫자)"));
-        let project_repo = cx.new(|cx| TextInput::new(cx, "레포 이름 (선택)"));
+        let project_repo =
+            cx.new(|cx| TextInput::new(cx, "코드 레포 폴더 (선택) · 예: ~/code/myapp"));
         let card_title = cx.new(|cx| TextInput::new(cx, "무엇을 할까요? (카드 제목)"));
         let card_body =
             cx.new(|cx| TextInput::new(cx, "자세한 설명 (선택) · Shift-Enter 줄바꿈").multiline(6));
@@ -1519,6 +1520,52 @@ impl Workspace {
         self.modal = None;
         window.focus(&self.focus);
         cx.notify();
+    }
+
+    /// 레포 폴더 칸 + "폴더 고르기" 버튼.
+    fn repo_row(&self, id: &'static str, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(self.project_repo.clone())
+            .child(
+                button(id, "폴더 고르기…", Btn::Ghost).on_click(
+                    cx.listener(|this, _: &ClickEvent, _w, cx| this.pick_repo_folder(cx)),
+                ),
+            )
+    }
+
+    /// 운영체제 폴더 선택 창으로 레포 폴더를 고른다. 이름 칸이 비어 있으면 폴더 이름을 넣는다.
+    fn pick_repo_folder(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("이 레포 사용".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(p) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                let shown = tilde(&p.display().to_string());
+                this.project_repo.update(cx, |i, cx| i.set_text(shown, cx));
+                if this.project_name.read(cx).text().trim().is_empty() {
+                    let leaf = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    this.project_name.update(cx, |i, cx| i.set_text(leaf, cx));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn submit_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2364,8 +2411,11 @@ impl Workspace {
                     ))
                     .child(div().text_sm().text_color(rgb(TEXT)).pt_2().child("1. 프로젝트 이름"))
                     .child(self.project_name.clone())
-                    .child(div().text_sm().text_color(rgb(TEXT)).child("2. 레포 이름 (선택)"))
-                    .child(self.project_repo.clone())
+                    .child(div().text_sm().text_color(rgb(TEXT)).child("2. 코드 레포 폴더 (선택)"))
+                    .child(self.repo_row("welcome-pick", cx))
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(
+                        "카드마다 이 레포의 git 워크트리를 따로 열어 워커가 그 안에서 일합니다. 원본 작업 폴더는 건드리지 않습니다.",
+                    ))
                     .child(
                         div().flex().flex_row().gap_2().pt_1().child(
                             button("welcome-create", "프로젝트 만들기", Btn::Primary).on_click(cx.listener(
@@ -3578,13 +3628,10 @@ impl Workspace {
                 dialog = dialog
                     .child(div().text_lg().text_color(rgb(TEXT)).child("새 프로젝트"))
                     .child(self.project_name.clone())
-                    .child(self.project_repo.clone())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(FAINT))
-                            .child("Enter로 다음 칸 · Esc로 닫기"),
-                    )
+                    .child(self.repo_row("np-pick", cx))
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(
+                        "레포를 고르면 카드마다 그 레포의 git 워크트리(브랜치 jc/<카드>)를 열어 워커가 거기서 일합니다. Enter로 다음 칸 · Esc로 닫기",
+                    ))
                     .child(
                         div()
                             .flex()

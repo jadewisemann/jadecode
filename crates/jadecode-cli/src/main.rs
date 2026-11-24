@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! jadecode init <dir> [--name <n>]
-//! jadecode project add <name> [--repo <r>]
+//! jadecode project add <name> [--repo <r>] [--repo-path <dir>]
 //! jadecode card add <title> --project <p> [--path a,b,c] [--repo r:b] [--after <id>]...
 //! jadecode card list [--project <p>]
 //! jadecode card show <card>
@@ -27,7 +27,7 @@ fn usage() -> &'static str {
     "jadecode <command>
 
   init <dir> [--name <n>]                워크스페이스 만들기
-  project add <name> [--repo <r>]        프로젝트 만들기
+  project add <name> [--repo <r>] [--repo-path <dir>]  프로젝트 만들기(레포 폴더를 주면 카드마다 워크트리)
   card add <title> --project <p>         카드 만들기
        [--path a,b,c] [--repo r=branch] [--after <id>] [--parent <id>]
   card list [--project <p>]              카드 목록
@@ -99,17 +99,21 @@ fn main() -> Result<()> {
                 Some("add") => {
                     let name = args.get(2).context("project add <name>")?;
                     let repo = flag_value(&args, "--repo");
+                    let repo_path = flag_value(&args, "--repo-path");
                     if let Some(sock) = server_up(&ws, &args) {
                         let out = rt().block_on(rpc_call(
                             &sock,
                             "project.add",
-                            json!({"name": name, "repo": repo}),
+                            json!({"name": name, "repo": repo, "repo_path": repo_path}),
                         ))?;
                         println!(
                             "{}",
                             ws.root.join(out["path"].as_str().unwrap_or("")).display()
                         );
                         return Ok(());
+                    }
+                    if repo_path.is_some() {
+                        bail!("--repo-path는 서버가 떠 있을 때 쓴다(jadecode server 또는 앱을 먼저 연다)");
                     }
                     let p = ws.add_project(name, repo.as_deref())?;
                     println!("{}", p.display());

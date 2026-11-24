@@ -10,6 +10,7 @@ pub const FRONT_KEY: &str = "jadecode";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, Eq)]
 pub struct RepoRef {
     pub repo: String,
+    #[serde(default)]
     pub branch: String,
     #[serde(default)]
     pub base: String,
