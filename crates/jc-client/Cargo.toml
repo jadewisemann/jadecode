@@ -20,9 +20,10 @@ jc-core.workspace = true
 # 서버에 못 붙으면 앱 안에서 로컬 백엔드로 띄운다.
 jc-server.workspace = true
 gpui = { version = "0.2.2", optional = true }
+unicode-segmentation = { version = "1", optional = true }
 
 [features]
 # 기본은 데이터 계층만: GPUI(무거운 X11/Vulkan 의존) 없이 빌드·테스트된다.
 # 화면을 쓰려면 `--features ui` (바이너리 jadecode-client).
 default = []
-ui = ["dep:gpui"]
+ui = ["dep:gpui", "dep:unicode-segmentation"]
