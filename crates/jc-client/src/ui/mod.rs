@@ -2685,7 +2685,7 @@ impl Workspace {
             .map(|p| snap.card_by_path(p).is_some())
             .unwrap_or(false);
         let left_w = if self.board_mode == BoardMode::List {
-            px(380.)
+            px(320.)
         } else {
             px(0.)
         };
@@ -2969,7 +2969,7 @@ impl Workspace {
             tabs = tabs.child(
                 div()
                     .id(key)
-                    .px_3()
+                    .px_2()
                     .py_2()
                     .text_sm()
                     .text_color(rgb(if active { TEXT } else { MUTED }))
