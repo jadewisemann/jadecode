@@ -2407,7 +2407,7 @@ impl Workspace {
                     .border_color(rgb(LINE))
                     .child(div().text_lg().text_color(rgb(TEXT)).child("jadecode에 오신 것을 환영합니다"))
                     .child(div().text_sm().text_color(rgb(MUTED)).child(
-                        "일은 카드 단위로 진행됩니다. 카드를 만들면 에이전트가 그 카드 폴더에서 일하고, 승인이나 답이 필요할 때만 받은편지함으로 돌아옵니다.",
+                        "일은 카드 단위로 진행됩니다. 카드를 만들면 에이전트가 그 카드 전용 작업 공간에서 일하고, 승인이나 답이 필요할 때만 \"확인 요청\"으로 돌아옵니다. 메신저·메모로 들어온 일은 \"수집함\"에 모입니다.",
                     ))
                     .child(div().text_sm().text_color(rgb(TEXT)).pt_2().child("1. 프로젝트 이름"))
                     .child(self.project_name.clone())
@@ -2628,8 +2628,18 @@ impl Workspace {
                     .child(format::status_label(&card.status))
                     .child("·")
                     .child(card.project.clone())
-                    .child("·")
-                    .child(card.id.chars().take(10).collect::<String>()),
+                    .children(
+                        detail
+                            .map(|d| d.repos.clone())
+                            .unwrap_or_default()
+                            .into_iter()
+                            .flat_map(|r| {
+                                [
+                                    div().child("·"),
+                                    div().font_family(MONO).text_color(rgb(TEXT)).child(r),
+                                ]
+                            }),
+                    ),
             );
 
         // 단계 진행
@@ -3257,7 +3267,7 @@ impl Workspace {
             .p_5()
             .size_full()
             .overflow_y_scroll()
-            .child(div().text_lg().text_color(rgb(TEXT)).child("받은편지함"))
+            .child(div().text_lg().text_color(rgb(TEXT)).child("확인 요청"))
             .child(
                 div()
                     .text_sm()

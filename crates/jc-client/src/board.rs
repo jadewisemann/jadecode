@@ -143,6 +143,7 @@ pub struct CardDetail {
     pub markdown: String,
     /// 카드 경로(거칠 단계).
     pub stages: Vec<String>,
+    /// "레포 · 브랜치"
     pub repos: Vec<String>,
 }
 
@@ -736,7 +737,17 @@ impl Board {
             .as_array()
             .map(|a| {
                 a.iter()
-                    .filter_map(|r| r["name"].as_str().map(String::from))
+                    .filter_map(|r| {
+                        let name = r["repo"].as_str().or(r["name"].as_str())?;
+                        let branch = r["branch"].as_str().unwrap_or("").trim().to_string();
+                        // 비어 있으면 서버가 워크트리를 열 때 쓰는 이름과 같게 보인다.
+                        let branch = if branch.is_empty() {
+                            format!("jc/{}", card.rsplit('/').next().unwrap_or(card))
+                        } else {
+                            branch
+                        };
+                        Some(format!("{name} · {branch}"))
+                    })
                     .collect()
             })
             .unwrap_or_default();
