@@ -222,6 +222,25 @@ async fn advance_moves_along_path_then_refuses() {
     let b = call(&mut ws, 2, "card.advance", json!({"card": id})).await;
     assert_eq!(b["error"]["code"], 4000, "{b}");
     assert_eq!(b["error"]["data"]["reason"], "path_end");
+    // 칸반 끌어 놓기: 경로 안의 단계로 바로 옮긴다. 경로 밖은 거절한다.
+    let c = call(
+        &mut ws,
+        3,
+        "card.advance",
+        json!({"card": id, "to": "refine"}),
+    )
+    .await;
+    assert_eq!(c["result"]["stage"], "refine", "{c}");
+    let d = call(
+        &mut ws,
+        4,
+        "card.advance",
+        json!({"card": id, "to": "verify"}),
+    )
+    .await;
+    assert_eq!(d["error"]["data"]["reason"], "not_on_path", "{d}");
+    let e = call(&mut ws, 5, "card.advance", json!({"card": id})).await;
+    assert_eq!(e["result"]["stage"], "implement", "{e}");
     h.client.abort();
 }
 

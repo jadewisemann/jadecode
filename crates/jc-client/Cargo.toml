@@ -17,6 +17,7 @@ futures-util.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 jc-core.workspace = true
+libc.workspace = true
 # 서버에 못 붙으면 앱 안에서 로컬 백엔드로 띄운다.
 jc-server.workspace = true
 gpui = { version = "0.2.2", optional = true }

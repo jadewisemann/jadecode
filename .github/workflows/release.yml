@@ -38,7 +38,10 @@ jobs:
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxcb-randr0-dev libxcb-xkb-dev libssl-dev pkg-config
       - name: build
-        run: cargo build --release --workspace --features jc-client/ui --bins
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          export JADECODE_VERSION="${TAG#v}"
+          cargo build --release --workspace --features jc-client/ui --bins
       - name: package
         run: |
           set -euo pipefail
@@ -87,7 +90,10 @@ jobs:
         with:
           key: release-macos
       - name: build
-        run: cargo build --release --workspace --features jc-client/ui --bins
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          export JADECODE_VERSION="${TAG#v}"
+          cargo build --release --workspace --features jc-client/ui --bins
       - name: package
         env:
           # 저장소 비밀에 인증서를 두면 서명한다. 없으면 make-app.sh 가 건너뛴다.

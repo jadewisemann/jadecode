@@ -68,6 +68,10 @@ fn main() -> Result<()> {
             .unwrap()
     };
     match args.first().map(|s| s.as_str()) {
+        Some("--version") | Some("-V") | Some("version") => {
+            println!("jadecode {}", jc_core::version::VERSION);
+            Ok(())
+        }
         Some("init") => {
             let dir = args.get(1).context("init <dir>")?;
             let name = flag_value(&args, "--name").unwrap_or_else(|| {
@@ -255,17 +259,14 @@ fn main() -> Result<()> {
             let check_only = has_flag(&args, "--check");
             let rt = rt();
             rt.block_on(async move {
-                let cur = env!("CARGO_PKG_VERSION");
+                let cur = jc_core::version::VERSION;
                 let tag = match rt_fetch_latest_tag().await {
                     Ok(t) => t,
                     Err(e) => anyhow::bail!("최신 버전을 확인할 수 없다: {e}"),
                 };
                 let latest = tag.trim_start_matches('v');
-                // 0.1.2-alpha 처럼 -alpha 접미사가 붙는다. 앞 숫자만 비교한다.
-                let cur_num = cur.split('-').next().unwrap_or(cur);
-                let lat_num = latest.split('-').next().unwrap_or(latest);
                 println!("현재: {cur}   최신: {latest}");
-                if cur_num >= lat_num {
+                if !jc_core::version::is_newer(latest, cur) {
                     println!("이미 최신이다.");
                     return Ok::<(), anyhow::Error>(());
                 }

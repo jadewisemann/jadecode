@@ -72,7 +72,7 @@ fn main() -> Result<()> {
                     json!({"jsonrpc":"2.0","id":id,"result":{
                         "protocolVersion": ver,
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "jadecode", "version": env!("CARGO_PKG_VERSION")}
+                        "serverInfo": {"name": "jadecode", "version": jc_core::version::VERSION}
                     }}),
                 );
             }

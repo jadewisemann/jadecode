@@ -10,11 +10,15 @@
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage: jadecode-client [워크스페이스 경로] [--dump]");
+        println!("usage: jadecode-client [워크스페이스 경로] [--dump] [--version]");
         println!(
             "  떠 있는 서버가 없으면 앱 안에서 로컬 백엔드를 띄운다 (끄려면 JADECODE_NO_EMBED=1)"
         );
         println!("  --dump: 창을 열지 않고 보드 스냅숏을 JSON으로 찍는다(시험·스크립트용)");
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("jadecode-client {}", jc_core::version::VERSION);
         return Ok(());
     }
     let dump = args.iter().any(|a| a == "--dump");
@@ -41,7 +45,14 @@ fn main() -> anyhow::Result<()> {
     }
     #[cfg(feature = "ui")]
     {
-        jc_client::ui::run(ws)
+        jc_client::logging::init();
+        jc_client::logging::install_panic_hook();
+        let r = jc_client::ui::run(ws);
+        if let Err(e) = &r {
+            eprintln!("시작 실패: {e:#}");
+            jc_client::logging::fatal_dialog("jadecode를 시작하지 못했습니다", &format!("{e:#}"));
+        }
+        r
     }
     #[cfg(not(feature = "ui"))]
     {

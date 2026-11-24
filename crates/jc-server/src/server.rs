@@ -669,7 +669,7 @@ where
                         &id,
                         json!({
                             "name": "jadecode",
-                            "version": env!("CARGO_PKG_VERSION"),
+                            "version": jc_core::version::VERSION,
                             "methods": Method::names(),
                             "workspace": sh.root.display().to_string(),
                             "transport": "websocket+jsonrpc2",
@@ -1134,16 +1134,33 @@ async fn card_advance(sh: &Shared, params: &Value) -> Result<Value, Error> {
     let content = std::fs::read_to_string(sh.root.join(&rel).join("task.md"))
         .map_err(|e| Error::internal(e.to_string()))?;
     let cs = card_state(&content).map_err(|e| Error::internal(e.to_string()))?;
-    let Some(next) = cs.front.next_stage() else {
-        return Err(Error::refused(
-            format!("card at end of path ({})", cs.front.stage),
-            "path_end",
-        ));
+    // `to`가 있으면 경로 안의 그 단계로 바로 옮긴다(칸반 끌어 놓기). 없으면 다음 단계.
+    let (index, next) = match params.get("to").and_then(|v| v.as_str()) {
+        Some(to) => match cs.front.path.iter().position(|s| s == to) {
+            Some(i) => (i, to.to_string()),
+            None => {
+                return Err(Error::refused(
+                    format!("stage {to} is not on this card's path"),
+                    "not_on_path",
+                ))
+            }
+        },
+        None => match cs.front.next_stage() {
+            Some(n) => (cs.front.path_index + 1, n.to_string()),
+            None => {
+                return Err(Error::refused(
+                    format!("card at end of path ({})", cs.front.stage),
+                    "path_end",
+                ))
+            }
+        },
     };
-    let next = next.to_string();
     let from = cs.front.stage.clone();
+    if from == next {
+        return Ok(json!({"path": rel, "stage": next, "seqs": []}));
+    }
     let mut front = cs.front.clone();
-    front.path_index += 1;
+    front.path_index = index;
     front.stage = next.clone();
     front.status = "idle".into();
     let seqs = set_front_cmd(

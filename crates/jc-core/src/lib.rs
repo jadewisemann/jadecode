@@ -14,6 +14,7 @@ pub mod store;
 pub mod taskmd;
 pub mod topic;
 pub mod ulid;
+pub mod version;
 pub mod workspace;
 
 pub use card::NewCard;

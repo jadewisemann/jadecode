@@ -37,10 +37,16 @@ actions!(
         Quit,
         NewCard,
         NewProject,
+        GoIntake,
         GoInbox,
         GoOrchestrator,
         GoBoard,
         GoAgents,
+        GoConnectors,
+        OpenLogs,
+        ReportIssue,
+        CheckUpdate,
+        About,
         ToggleBoardMode,
         CloseModal,
         Refresh,
@@ -160,6 +166,15 @@ enum Action {
     RemoveConnector(String),
     SyncConnectors(Option<String>),
     TestConnector(String),
+    /// 칸반에서 끌어 놓아 단계를 옮긴다.
+    MoveStage {
+        card: String,
+        stage: String,
+    },
+    /// 새 판 확인. `true`면 사람이 메뉴에서 부른 것(결과를 늘 알린다).
+    CheckUpdate(bool),
+    /// 함께 설치된 `jadecode update`로 갈아 끼운다.
+    RunUpdate,
 }
 
 /// 백그라운드 동작의 결과.
@@ -167,13 +182,24 @@ enum Outcome {
     Info(String),
     Error(String),
     Card(CardDetail),
-    History { key: String, rows: Vec<EventRow> },
-    Diff { card: String, text: String },
+    History {
+        key: String,
+        rows: Vec<EventRow>,
+    },
+    Diff {
+        card: String,
+        text: String,
+    },
     ProjectAdded(String),
     CardAdded(String),
     Agents(Vec<AgentInfo>, Vec<BotInfo>),
     Intake(Vec<IntakeItem>),
     Connectors(Vec<ConnectorInfo>),
+    /// 새 판(태그). 없으면 None.
+    Update {
+        latest: Option<String>,
+        manual: bool,
+    },
 }
 
 /// 구독 스레드와 화면이 나누는 상태.
@@ -203,6 +229,9 @@ pub struct Workspace {
     reply_target: Option<String>,
     last_intake_seq: u64,
     conn_project: Option<String>,
+    /// 새 판이 있으면 그 태그.
+    update_available: Option<String>,
+    updating: bool,
     memo_input: Entity<TextInput>,
     reply_input: Entity<TextInput>,
     conn_token: Entity<TextInput>,
@@ -269,20 +298,33 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-n", NewCard, None),
             KeyBinding::new("secondary-shift-n", NewProject, None),
-            KeyBinding::new("secondary-1", GoInbox, None),
-            KeyBinding::new("secondary-2", GoOrchestrator, None),
-            KeyBinding::new("secondary-3", GoBoard, None),
-            KeyBinding::new("secondary-4", GoAgents, None),
+            KeyBinding::new("secondary-1", GoIntake, None),
+            KeyBinding::new("secondary-2", GoInbox, None),
+            KeyBinding::new("secondary-3", GoOrchestrator, None),
+            KeyBinding::new("secondary-4", GoBoard, None),
+            KeyBinding::new("secondary-5", GoAgents, None),
+            KeyBinding::new("secondary-6", GoConnectors, None),
             KeyBinding::new("secondary-l", ToggleBoardMode, None),
             KeyBinding::new("secondary-r", Refresh, None),
             KeyBinding::new("secondary-k", FocusComposer, None),
             KeyBinding::new("escape", CloseModal, Some("Workspace")),
         ]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+        cx.on_action(|_: &OpenLogs, _cx: &mut App| {
+            let dir = crate::logging::log_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            open_path(&dir.display().to_string());
+        });
+        cx.on_action(|_: &ReportIssue, _cx: &mut App| {
+            open_path(&issue_url());
+        });
         cx.set_menus(vec![
             Menu {
                 name: "jadecode".into(),
                 items: vec![
+                    MenuItem::action("jadecode 정보", About),
+                    MenuItem::action("업데이트 확인…", CheckUpdate),
+                    MenuItem::separator(),
                     MenuItem::os_submenu("Services", SystemMenuType::Services),
                     MenuItem::separator(),
                     MenuItem::action("jadecode 종료", Quit),
@@ -307,13 +349,22 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
             Menu {
                 name: "보기".into(),
                 items: vec![
-                    MenuItem::action("받은편지함", GoInbox),
+                    MenuItem::action("수집함", GoIntake),
+                    MenuItem::action("확인 요청", GoInbox),
                     MenuItem::action("오케스트레이터", GoOrchestrator),
                     MenuItem::action("보드", GoBoard),
                     MenuItem::action("에이전트", GoAgents),
+                    MenuItem::action("연결", GoConnectors),
                     MenuItem::separator(),
                     MenuItem::action("목록/칸반 전환", ToggleBoardMode),
                     MenuItem::action("새로고침", Refresh),
+                ],
+            },
+            Menu {
+                name: "도움말".into(),
+                items: vec![
+                    MenuItem::action("문제 보고하기…", ReportIssue),
+                    MenuItem::action("로그 폴더 열기", OpenLogs),
                 ],
             },
         ]);
@@ -387,6 +438,37 @@ fn notify_desktop(title: &str, body: &str) {
     });
 }
 
+/// 파일·폴더·URL을 기본 앱으로 연다.
+fn open_path(target: &str) {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(cmd).arg(target).spawn();
+}
+
+/// 문제 보고 주소. 판·운영체제를 미리 채운다(개인 정보는 넣지 않는다).
+fn issue_url() -> String {
+    let body = format!(
+        "**무엇을 하다가**\n\n**무슨 일이 있었나**\n\n**기대한 것**\n\n---\n판: {}\n운영체제: {} {}\n로그: {}",
+        jc_core::version::VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        crate::logging::log_path().display()
+    );
+    let enc: String = body
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    format!("https://github.com/jadewisemann/jadecode/issues/new?labels=alpha&body={enc}")
+}
+
 fn tilde(p: &str) -> String {
     match std::env::var("HOME") {
         Ok(h) if !h.is_empty() && p.starts_with(&h) => format!("~{}", &p[h.len()..]),
@@ -423,7 +505,8 @@ fn spawn_action_thread(
                     board = match rt.block_on(c.open()) {
                         Ok(b) => Some(b),
                         Err(e) => {
-                            let _ = out.send(Outcome::Error(format!("백엔드에 붙지 못했다: {e}")));
+                            let _ = out
+                                .send(Outcome::Error(format!("백엔드에 연결하지 못했습니다: {e}")));
                             continue;
                         }
                     };
@@ -432,7 +515,25 @@ fn spawn_action_thread(
                 if ws_root.is_none() {
                     ws_root = rt.block_on(b.workspace()).ok();
                 }
-                let r = run_action(&rt, b, ws_root.as_deref(), a);
+                // 한 동작이 패닉해도 동작 스레드는 살아남아 다음 동작을 받는다.
+                // 변종 이름만 남긴다(입력값에 토큰이 들어 있을 수 있다).
+                let what: String = format!("{a:?}")
+                    .split(|c: char| !c.is_alphanumeric())
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let r = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_action(&rt, b, ws_root.as_deref(), a)
+                })) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        eprintln!("동작 중 패닉: {what}");
+                        board = None;
+                        Outcome::Error(
+                            "내부 오류로 동작을 끝내지 못했습니다 (도움말 → 로그 폴더 열기)".into(),
+                        )
+                    }
+                };
                 // RPC가 실패했으면 다음 동작 전에 다시 붙도록 연결을 버린다.
                 if let Outcome::Error(e) = &r {
                     if e.contains("연결") || e.contains("closed") {
@@ -473,12 +574,12 @@ fn run_action(
                         return fail("워커에게 보내기 실패", e);
                     }
                 }
-                Outcome::Info("워커를 띄웠다".into())
+                Outcome::Info("워커를 시작했습니다".into())
             }
             Err(e) => fail("워커 시작 실패", e),
         },
         Action::StopInstance(id) => match rt.block_on(b.stop_instance(&id)) {
-            Ok(()) => Outcome::Info("인스턴스를 멈췄다".into()),
+            Ok(()) => Outcome::Info("워커를 멈췄습니다".into()),
             Err(e) => fail("멈추기 실패", e),
         },
         Action::ResolvePermission { seq, allow } => {
@@ -490,13 +591,13 @@ fn run_action(
         }
         Action::SendOrchestrator { project, text } => {
             match rt.block_on(b.send_to_orchestrator(&project, &text)) {
-                Ok(()) => Outcome::Info("오케스트레이터에게 보냈다".into()),
+                Ok(()) => Outcome::Info("오케스트레이터에게 보냈습니다".into()),
                 Err(e) => fail("보내기 실패", e),
             }
         }
         Action::SendInstance { instance, text } => {
             match rt.block_on(b.send_to_instance(&instance, &text)) {
-                Ok(()) => Outcome::Info("보냈다".into()),
+                Ok(()) => Outcome::Info("보냈습니다".into()),
                 Err(e) => fail("보내기 실패", e),
             }
         }
@@ -512,7 +613,9 @@ fn run_action(
         }
         Action::LoadDiff(card) => {
             let Some(ws) = ws else {
-                return Outcome::Error("워크스페이스 위치를 몰라 변경사항을 읽지 못했다".into());
+                return Outcome::Error(
+                    "워크스페이스 위치를 몰라 변경사항을 읽지 못했습니다".into(),
+                );
             };
             let text = vm::collect_diff(&ws.join(&card), 4000);
             Outcome::Diff { card, text }
@@ -553,7 +656,7 @@ fn run_action(
                 None => (text.trim().to_string(), String::new()),
             };
             match rt.block_on(b.intake_add(&project, &title, &body)) {
-                Ok(_) => Outcome::Info("수집함에 넣었다".into()),
+                Ok(_) => Outcome::Info("수집함에 넣었습니다".into()),
                 Err(e) => fail("메모 넣기 실패", e),
             }
         }
@@ -573,19 +676,19 @@ fn run_action(
                 }
                 Outcome::CardAdded(card)
             }
-            Ok(None) => Outcome::Error("카드를 만들지 못했다".into()),
+            Ok(None) => Outcome::Error("카드를 만들지 못했습니다".into()),
             Err(e) => fail("카드 만들기 실패", e),
         },
         Action::Archive(id) => match rt.block_on(b.intake_triage(&id, "archive", None, None)) {
-            Ok(_) => Outcome::Info("보관했다".into()),
+            Ok(_) => Outcome::Info("보관했습니다".into()),
             Err(e) => fail("보관 실패", e),
         },
         Action::CloseIntake(id) => match rt.block_on(b.intake_close(&id)) {
-            Ok(()) => Outcome::Info("닫았다".into()),
+            Ok(()) => Outcome::Info("닫았습니다".into()),
             Err(e) => fail("닫기 실패", e),
         },
         Action::Reply { id, text } => match rt.block_on(b.intake_reply(&id, &text)) {
-            Ok(()) => Outcome::Info("답장을 보냈다".into()),
+            Ok(()) => Outcome::Info("답장을 보냈습니다".into()),
             Err(e) => fail("답장 보내기 실패", e),
         },
         Action::AskOrchestratorTriage { project, id } => {
@@ -593,7 +696,7 @@ fn run_action(
                 "수집 항목 {id}를 `intake_get`으로 읽고 `intake_triage`로 분류해 주세요. 코드 작업이면 원문 없이도 일할 수 있게 짧은 brief와 done_when을 써서 카드로 만들고 워커를 붙여 주세요."
             );
             match rt.block_on(b.send_to_orchestrator(&project, &text)) {
-                Ok(()) => Outcome::Info("오케스트레이터에게 분류를 맡겼다".into()),
+                Ok(()) => Outcome::Info("오케스트레이터에게 분류를 맡겼습니다".into()),
                 Err(e) => fail("오케스트레이터에게 보내기 실패", e),
             }
         }
@@ -619,7 +722,7 @@ fn run_action(
             Err(e) => fail("커넥터 저장 실패", e),
         },
         Action::RemoveConnector(name) => match rt.block_on(b.connector_remove(&name)) {
-            Ok(()) => Outcome::Info(format!("{name} 연결을 지웠다")),
+            Ok(()) => Outcome::Info(format!("{name} 연결을 지웠습니다")),
             Err(e) => fail("지우기 실패", e),
         },
         Action::SyncConnectors(name) => match rt.block_on(b.connector_sync(name.as_deref())) {
@@ -631,9 +734,54 @@ fn run_action(
             Ok(tools) => Outcome::Info(format!("{name} 정상 · 도구 {}개", tools.len())),
             Err(e) => fail("연결 시험 실패", e),
         },
+        Action::MoveStage { card, stage } => match rt.block_on(b.move_to_stage(&card, &stage)) {
+            Ok(stage) => {
+                Outcome::Info(format!("{} 단계로 옮겼습니다", format::stage_label(&stage)))
+            }
+            Err(e) => fail("단계를 옮기지 못했습니다", e),
+        },
+        Action::CheckUpdate(manual) => match latest_release_tag() {
+            Ok(tag) => Outcome::Update {
+                latest: jc_core::version::is_newer(&tag, jc_core::version::VERSION).then_some(tag),
+                manual,
+            },
+            Err(e) if manual => fail("업데이트를 확인하지 못했습니다", e),
+            Err(_) => Outcome::Update {
+                latest: None,
+                manual,
+            },
+        },
+        Action::RunUpdate => {
+            let exe = std::env::current_exe().ok();
+            let cli = exe
+                .as_ref()
+                .and_then(|e| e.parent())
+                .map(|d| d.join("jadecode"))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| std::path::PathBuf::from("jadecode"));
+            let mut cmd = std::process::Command::new(&cli);
+            cmd.arg("update");
+            // 지금 실행 중인 앱 번들을 갈아 끼우게 한다(/Applications 밖에 둔 경우 포함).
+            if let Some(app) = exe.as_ref().and_then(|e| {
+                e.ancestors()
+                    .find(|a| a.extension().is_some_and(|x| x == "app"))
+            }) {
+                cmd.env("JADECODE_APP", app);
+            }
+            match cmd.output() {
+                Ok(o) if o.status.success() => {
+                    Outcome::Info("업데이트를 설치했습니다. 앱을 다시 시작하면 적용됩니다".into())
+                }
+                Ok(o) => Outcome::Error(format!(
+                    "업데이트 실패: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )),
+                Err(e) => Outcome::Error(format!("업데이트 실패: {e}")),
+            }
+        }
         Action::OpenFolder { card, terminal } => {
             let Some(ws) = ws else {
-                return Outcome::Error("워크스페이스 위치를 모른다".into());
+                return Outcome::Error("워크스페이스 위치를 알 수 없습니다".into());
             };
             let dir = match &card {
                 Some(c) => ws.join(c),
@@ -649,11 +797,37 @@ fn run_action(
                 std::process::Command::new("xdg-open").arg(&dir).spawn()
             };
             match r {
-                Ok(_) => Outcome::Info(format!("열었다: {}", tilde(&dir.display().to_string()))),
+                Ok(_) => {
+                    Outcome::Info(format!("열었습니다: {}", tilde(&dir.display().to_string())))
+                }
                 Err(e) => Outcome::Error(format!("열기 실패: {e}")),
             }
         }
     }
+}
+
+/// GitHub에서 초안이 아닌 최신 릴리즈 태그를 읽는다(curl 사용, 10초 제한).
+fn latest_release_tag() -> anyhow::Result<String> {
+    let out = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "--max-time",
+            "10",
+            "-H",
+            "User-Agent: jadecode-app",
+            "https://api.github.com/repos/jadewisemann/jadecode/releases?per_page=5",
+        ])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+        .find_map(|r| r["tag_name"].as_str().map(String::from))
+        .ok_or_else(|| anyhow::anyhow!("릴리즈를 찾지 못했습니다"))
 }
 
 /// 이벤트를 받아 공유 스냅숏을 갱신한다. 연결이 끊기면 2초마다 다시 붙는다.
@@ -697,6 +871,37 @@ fn spawn_subscription_thread(board: Board, conn: crate::board::Connection, live:
             });
         })
         .ok();
+}
+
+// ---------- 끌어 놓기 ----------
+
+/// 칸반에서 끄는 카드.
+#[derive(Clone)]
+struct DragCard {
+    path: String,
+    title: String,
+    stage: String,
+}
+
+/// 끄는 동안 커서를 따라다니는 작은 타일.
+struct DragPreview(String);
+
+impl Render for DragPreview {
+    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_2()
+            .w(px(240.))
+            .rounded_md()
+            .bg(rgb(RAISED))
+            .border_1()
+            .border_color(rgb(ACCENT))
+            .shadow_lg()
+            .text_sm()
+            .text_color(rgb(TEXT))
+            .truncate()
+            .child(self.0.clone())
+    }
 }
 
 // ---------- 작은 부품 ----------
@@ -816,16 +1021,27 @@ impl Workspace {
         backend_label: String,
         backend_embedded: bool,
     ) -> Self {
-        let composer = cx.new(|cx| TextInput::new(cx, "워커에게 말하기"));
-        let orch_input = cx.new(|cx| TextInput::new(cx, "오케스트레이터에게 할 일을 말하세요"));
+        let composer = cx.new(|cx| {
+            TextInput::new(cx, "워커에게 말하기 · Enter 보내기 · Shift-Enter 줄바꿈").multiline(8)
+        });
+        let orch_input = cx.new(|cx| {
+            TextInput::new(
+                cx,
+                "오케스트레이터에게 할 일을 말하세요 · Shift-Enter 줄바꿈",
+            )
+            .multiline(8)
+        });
         let project_name = cx.new(|cx| TextInput::new(cx, "프로젝트 이름 (영문·숫자)"));
         let project_repo = cx.new(|cx| TextInput::new(cx, "레포 이름 (선택)"));
         let card_title = cx.new(|cx| TextInput::new(cx, "무엇을 할까요? (카드 제목)"));
-        let card_body = cx.new(|cx| TextInput::new(cx, "자세한 설명 (선택)"));
+        let card_body =
+            cx.new(|cx| TextInput::new(cx, "자세한 설명 (선택) · Shift-Enter 줄바꿈").multiline(6));
         let memo_input =
             cx.new(|cx| TextInput::new(cx, "직접 메모 넣기 · \"제목 - 내용\" · Enter"));
-        let reply_input = cx.new(|cx| TextInput::new(cx, "답장 내용 · Enter로 보내기"));
-        let conn_token = cx.new(|cx| TextInput::new(cx, "봇 토큰 (xoxb-…)"));
+        let reply_input = cx.new(|cx| {
+            TextInput::new(cx, "답장 내용 · Enter 보내기 · Shift-Enter 줄바꿈").multiline(6)
+        });
+        let conn_token = cx.new(|cx| TextInput::new(cx, "봇 토큰 (xoxb-…)").secret());
         let conn_team = cx.new(|cx| TextInput::new(cx, "워크스페이스 ID (T…)"));
         let conn_channel = cx.new(|cx| TextInput::new(cx, "채널 ID (C…)"));
 
@@ -952,6 +1168,9 @@ impl Workspace {
         let _ = tx.send(Action::LoadAgents);
         let _ = tx.send(Action::LoadIntake);
         let _ = tx.send(Action::LoadConnectors);
+        if !jc_core::version::is_dev_build() {
+            let _ = tx.send(Action::CheckUpdate(false));
+        }
         Self {
             live,
             seen_version: 0,
@@ -985,6 +1204,8 @@ impl Workspace {
             reply_target: None,
             last_intake_seq: 0,
             conn_project: None,
+            update_available: None,
+            updating: false,
             memo_input,
             reply_input,
             conn_token,
@@ -1020,8 +1241,19 @@ impl Workspace {
         while let Ok(o) = self.results.try_recv() {
             dirty = true;
             match o {
-                Outcome::Info(m) => self.toast(m, false),
-                Outcome::Error(m) => self.toast(m, true),
+                Outcome::Info(m) => {
+                    if self.updating && m.starts_with("업데이트") {
+                        self.updating = false;
+                        self.update_available = None;
+                    }
+                    self.toast(m, false)
+                }
+                Outcome::Error(m) => {
+                    if m.starts_with("업데이트") {
+                        self.updating = false;
+                    }
+                    self.toast(m, true)
+                }
                 Outcome::Card(d) => {
                     self.details.insert(d.path.clone(), d);
                 }
@@ -1032,12 +1264,12 @@ impl Workspace {
                     self.diffs.insert(card, text);
                 }
                 Outcome::ProjectAdded(slug) => {
-                    self.toast(format!("프로젝트 {slug}를 만들었다"), false);
+                    self.toast(format!("프로젝트 {slug}를 만들었습니다"), false);
                     self.project = Some(slug);
                     self.nav = Nav::Board;
                 }
                 Outcome::CardAdded(path) => {
-                    self.toast("카드를 만들었다", false);
+                    self.toast("카드를 만들었습니다", false);
                     self.nav = Nav::Board;
                     self.open_card(path, cx);
                 }
@@ -1047,6 +1279,18 @@ impl Workspace {
                 }
                 Outcome::Intake(v) => self.intake = v,
                 Outcome::Connectors(v) => self.connectors = v,
+                Outcome::Update { latest, manual } => {
+                    if manual {
+                        match &latest {
+                            Some(t) => self.toast(format!("새 판 {t}이 있습니다"), false),
+                            None => self.toast(
+                                format!("최신 판입니다 ({})", jc_core::version::VERSION),
+                                false,
+                            ),
+                        }
+                    }
+                    self.update_available = latest;
+                }
             }
         }
         let v = self.live.version.load(Ordering::Relaxed);
@@ -1232,7 +1476,7 @@ impl Workspace {
                     agent: self.agent_choice.clone(),
                     then_send: Some(text),
                 });
-                self.toast("워커를 띄우고 말을 전한다", false);
+                self.toast("워커를 시작하고 말을 전합니다", false);
             }
         }
         self.thread_scroll.scroll_to_bottom();
@@ -1579,6 +1823,48 @@ impl Workspace {
         }
         col = col.child(plist);
 
+        // 새 판 알림
+        if let Some(tag) = self.update_available.clone() {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .mx_3()
+                    .mb_2()
+                    .p_2()
+                    .rounded_md()
+                    .bg(rgb(0x1d2a47))
+                    .border_1()
+                    .border_color(rgb(ACCENT))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT))
+                            .child(format!("새 판 {tag}")),
+                    )
+                    .child(
+                        button(
+                            "do-update",
+                            if self.updating {
+                                "설치하는 중…"
+                            } else {
+                                "업데이트 설치"
+                            },
+                            Btn::Primary,
+                        )
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, _w, cx| {
+                                if !this.updating {
+                                    this.updating = true;
+                                    this.send(Action::RunUpdate);
+                                }
+                                cx.notify();
+                            },
+                        )),
+                    ),
+            );
+        }
         // 아래: 연결 상태
         col.child(
             div()
@@ -1813,6 +2099,7 @@ impl Workspace {
                 .into_iter()
                 .cloned()
                 .collect();
+            let target = stage.clone();
             let mut col = div()
                 .id(("col", si))
                 .flex()
@@ -1824,7 +2111,19 @@ impl Workspace {
                 .p_2()
                 .rounded_lg()
                 .bg(rgb(PANEL))
+                .border_1()
+                .border_color(rgb(PANEL))
                 .overflow_y_scroll()
+                .drag_over::<DragCard>(|st, _, _, _| st.border_color(rgb(ACCENT)).bg(rgb(0x18203a)))
+                .on_drop(cx.listener(move |this, d: &DragCard, _w, cx| {
+                    if d.stage != target {
+                        this.send(Action::MoveStage {
+                            card: d.path.clone(),
+                            stage: target.clone(),
+                        });
+                    }
+                    cx.notify();
+                }))
                 .child(
                     div()
                         .flex()
@@ -1843,9 +2142,18 @@ impl Workspace {
                 let perms = vm::pending_permissions_of(&snap, &c.path);
                 let path = c.path.clone();
                 let key: SharedString = format!("tile-{}", c.path).into();
+                let drag = DragCard {
+                    path: c.path.clone(),
+                    title: c.title.clone(),
+                    stage: c.stage.clone(),
+                };
                 col = col.child(
                     div()
                         .id(ElementId::Name(key))
+                        .on_drag(drag, |d, _offset, _w, cx| {
+                            let t = d.title.clone();
+                            cx.new(|_| DragPreview(t))
+                        })
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -2521,7 +2829,7 @@ impl Workspace {
         div()
             .flex()
             .flex_row()
-            .items_center()
+            .items_end()
             .gap_2()
             .px_4()
             .py_3()
@@ -3865,6 +4173,33 @@ impl Render for Workspace {
                     cx.notify();
                 }
             }))
+            .on_action(cx.listener(|this, _: &GoIntake, w, cx| {
+                this.nav = Nav::Intake;
+                this.send(Action::LoadIntake);
+                w.focus(&this.memo_input.focus_handle(cx));
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &GoConnectors, _w, cx| {
+                this.nav = Nav::Connectors;
+                this.send(Action::LoadConnectors);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CheckUpdate, _w, cx| {
+                this.send(Action::CheckUpdate(true));
+                this.toast("업데이트를 확인하는 중…", false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &About, _w, cx| {
+                this.toast(
+                    format!(
+                        "jadecode {} · {}",
+                        jc_core::version::VERSION,
+                        this.backend_label
+                    ),
+                    false,
+                );
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &GoInbox, _w, cx| {
                 this.nav = Nav::Inbox;
                 cx.notify();
@@ -3904,7 +4239,7 @@ impl Render for Workspace {
                 if let Some(p) = this.project.clone() {
                     this.set_project(Some(p), cx);
                 }
-                this.toast("새로 고쳤다", false);
+                this.toast("새로 고쳤습니다", false);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusComposer, w, cx| {
