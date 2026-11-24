@@ -369,7 +369,14 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
             },
         ]);
 
-        let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
+        // 화면이 작으면(노트북·CI 1024x768) 창이 화면 밖으로 나가지 않게 줄인다.
+        let (mut w, mut h) = (px(1360.), px(860.));
+        if let Some(d) = cx.primary_display() {
+            let ds = d.bounds().size;
+            w = w.min(ds.width * 0.94).max(px(960.));
+            h = h.min(ds.height * 0.86).max(px(600.));
+        }
+        let bounds = Bounds::centered(None, size(w, h), cx);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -1458,10 +1465,25 @@ impl Workspace {
                 }
                 wait(1800).await;
                 let path = dir.join(format!("{name}.png"));
-                let _ = std::process::Command::new("screencapture")
-                    .args(["-x", "-o"])
-                    .arg(&path)
-                    .status();
+                // 창 영역만 찍는다(화면 좌표, 포인트).
+                let rect = this
+                    .update_in(cx, |_, window, _| {
+                        let b = window.bounds();
+                        format!(
+                            "{},{},{},{}",
+                            f32::from(b.origin.x) as i32,
+                            f32::from(b.origin.y) as i32,
+                            f32::from(b.size.width) as i32,
+                            f32::from(b.size.height) as i32
+                        )
+                    })
+                    .unwrap_or_default();
+                let mut cmd = std::process::Command::new("screencapture");
+                cmd.args(["-x", "-o"]);
+                if !rect.is_empty() {
+                    cmd.arg(format!("-R{rect}"));
+                }
+                let _ = cmd.arg(&path).status();
                 eprintln!("shot {}", path.display());
             }
             let _ = this.update(cx, |_, cx| cx.quit());
