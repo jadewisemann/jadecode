@@ -178,6 +178,8 @@ pub struct Workspace {
     thread_scroll: ScrollHandle,
     last_thread_len: usize,
     last_title: String,
+    /// 이미 알린 받은편지함 항목(seq). 처음 그릴 때 있던 것은 알리지 않는다.
+    notified: Option<std::collections::HashSet<u64>>,
     _subs: Vec<Subscription>,
 }
 
@@ -308,6 +310,33 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
         cx.activate(true);
     });
     Ok(())
+}
+
+/// "PR 만들기" 버튼이 워커에게 보내는 지시.
+const PR_PROMPT: &str =
+    "지금까지 바꾼 내용을 확인하고 커밋한 뒤 브랜치를 푸시해서 Draft PR을 열어 주세요. \
+보호 브랜치에 직접 병합하지는 마세요. 끝나면 PR 링크를 report로 알려 주세요.";
+
+/// 데스크톱 알림(받은편지함에 새 일이 들어왔을 때). 실패해도 조용히 넘어간다.
+fn notify_desktop(title: &str, body: &str) {
+    let (title, body) = (title.to_string(), body.to_string());
+    std::thread::spawn(move || {
+        if cfg!(target_os = "macos") {
+            let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!(
+                "display notification \"{}\" with title \"{}\"",
+                esc(&body),
+                esc(&title)
+            );
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .output();
+        } else {
+            let _ = std::process::Command::new("notify-send")
+                .args([&title, &body])
+                .output();
+        }
+    });
 }
 
 fn tilde(p: &str) -> String {
@@ -763,6 +792,7 @@ impl Workspace {
             thread_scroll: ScrollHandle::new(),
             last_thread_len: 0,
             last_title: String::new(),
+            notified: None,
             _subs: subs,
         }
     }
@@ -820,6 +850,7 @@ impl Workspace {
         if v != self.seen_version {
             self.seen_version = v;
             dirty = true;
+            self.notify_new_inbox();
         }
         if let Some((_, _, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(6) {
@@ -829,6 +860,30 @@ impl Workspace {
         }
         if dirty {
             cx.notify();
+        }
+    }
+
+    /// 받은편지함에 새로 들어온 것을 데스크톱 알림으로 알린다.
+    fn notify_new_inbox(&mut self) {
+        let snap = self.snap();
+        let items = vm::inbox(&snap);
+        let Some(seen) = self.notified.as_mut() else {
+            self.notified = Some(items.iter().map(|i| i.event().seq).collect());
+            return;
+        };
+        for it in &items {
+            let e = it.event();
+            if !seen.insert(e.seq) {
+                continue;
+            }
+            let card = vm::card_of_topic(&e.topic)
+                .and_then(|p| snap.card_by_path(&p).map(|c| c.title.clone()))
+                .unwrap_or_else(|| e.topic.clone());
+            let (title, body) = match it {
+                InboxItem::Permission(_) => ("권한 승인이 필요합니다", format::permission_line(e)),
+                InboxItem::Question(_) => ("에이전트가 기다립니다", vm::thread_item(e).text),
+            };
+            notify_desktop(&format!("jadecode · {title}"), &format!("{card}: {body}"));
         }
     }
 
@@ -1879,6 +1934,7 @@ impl Workspace {
         let c2 = path.clone();
         let c3 = path.clone();
         let c4 = path.clone();
+        let c5 = path.clone();
         actions_row = actions_row
             .child(div().flex_1())
             .child(
@@ -1908,6 +1964,25 @@ impl Workspace {
                             terminal: false,
                         });
                         cx.notify();
+                    },
+                )),
+            )
+            .child(
+                button("open-term", "터미널", Btn::Subtle).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _w, cx| {
+                        this.send(Action::OpenFolder {
+                            card: Some(c5.clone()),
+                            terminal: true,
+                        });
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                button("make-pr", "PR 만들기", Btn::Ghost).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _w, cx| {
+                        this.card_tab = CardTab::Thread;
+                        this.send_from_composer(PR_PROMPT.to_string(), cx);
                     },
                 )),
             );
