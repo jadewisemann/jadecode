@@ -200,6 +200,39 @@ impl Tools {
                 }),
             ));
             out.push(tool(
+                "intake_list",
+                "수집함(외부 사이클: 메신저·메일·이슈에서 들어온 일)을 본다. state: new|carded|reply_pending|archived|closed",
+                json!({
+                    "type": "object",
+                    "properties": {"state": {"type": "string"}}
+                }),
+            ));
+            out.push(tool(
+                "intake_get",
+                "수집 항목 하나의 원문을 읽는다.",
+                json!({
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}},
+                    "required": ["id"]
+                }),
+            ));
+            out.push(tool(
+                "intake_triage",
+                "수집 항목을 분류한다. decision=card면 카드를 만든다(원문 대신 title·brief·done_when만 카드에 들어간다). decision=archive면 보관한다.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "decision": {"type": "string", "enum": ["card", "archive"]},
+                        "title": {"type": "string"},
+                        "brief": {"type": "string", "description": "워커가 원문 없이 일할 수 있는 2~5문장 요약"},
+                        "done_when": {"type": "string", "description": "완료 조건"},
+                        "note": {"type": "string"}
+                    },
+                    "required": ["id", "decision"]
+                }),
+            ));
+            out.push(tool(
                 "read_event",
                 "이벤트 이력을 읽는다.",
                 json!({
@@ -422,6 +455,15 @@ impl Tools {
                 }
                 self.rpc("instance.start", p)
             }
+            "intake_list" => {
+                let mut p = json!({"project": self.handle.project});
+                if let Some(st) = args.get("state") {
+                    p["state"] = st.clone();
+                }
+                self.rpc("intake.list", p)
+            }
+            "intake_get" => self.rpc("intake.get", json!({"id": args["id"]})),
+            "intake_triage" => self.rpc("intake.triage", args.clone()),
             "read_event" => self.rpc(
                 "events.tail",
                 json!({
@@ -512,6 +554,9 @@ mod tests {
             "card_add",
             "card_advance",
             "instance_start",
+            "intake_list",
+            "intake_get",
+            "intake_triage",
             "permission",
         ] {
             assert!(names.contains(&n.to_string()), "{names:?}");

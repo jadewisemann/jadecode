@@ -101,6 +101,48 @@
 - **이 컨테이너에서는 창이 검게 나온다**: Vulkan 드라이버가 없어(`/dev/dri` 없음) 렌더 결과가 화면에 오지 않는다. lavapipe(소프트웨어 Vulkan)+Xvfb에서도 창은 뜨지만 픽셀은 검다. 실제 픽셀 확인은 Mac(또는 GPU 있는 리눅스)에서 해야 한다.
 - GPUI 0.2.2가 끌어오는 `zed-async-tar`가 `xattr 0.2`를 고정하는데 그 판이 최신 libc(aarch64)에서 `libc::ENOATTR`로 깨진다 → `vendor/xattr`에 상수만 고친 사본을 두고 `[patch.crates-io]`로 쓴다.
 
+## 바깥 사이클: 수집함과 커넥터
+
+안쪽 사이클(카드·워커·단계)과 별도로, 코드 밖에서 들어온 해야 할 일을 모아 일로 만드는 바깥 사이클이 있다.
+
+- **수집함** — 토픽 `project/<p>/intake`. 이벤트 `intake.received`(외부 id로 중복 제거) → `intake.triaged`(카드로 만들거나 보관) → 카드가 끝나면 상태가 `reply_pending`(회신 대기) → `intake.replied`/`intake.closed`. 상태는 이벤트를 접어 계산한다(`jc-server/src/intake.rs`).
+- **컨텍스트를 작게 옮긴다** — 카드로 만들 때 원문 전체 대신 짧은 brief + done_when + 원문 링크만 카드 본문에 넣는다. 워커는 원문이 필요하면 링크를 연다.
+- **오케스트레이터** — `intake.received`가 깨우기 사유이고, MCP 도구 `intake_list`·`intake_get`·`intake_triage`로 분류할 수 있다.
+- **칸반** — 왼쪽 "수집"(바깥·들어온 일), 가운데 단계 열(안쪽·코드), 오른쪽 "회신 대기"(바깥·돌려줄 일)의 세 구역으로 두 사이클을 한 화면에 보인다.
+
+### 커넥터 (MCP)
+
+출처마다 MCP 서버(stdio)를 하나씩 띄워 가져오기 도구를 부르고, 결과를 필드 경로로 수집 항목에 대응시킨다(`jc-server/src/connectors.rs`). 설정은 `.jadecode/connectors.toml`(권한 0600)에만 있고, RPC 응답에서는 비밀 값이 가려진다. 서버는 10초마다 확인해 연결마다 `interval_sec`(최소 15초) 간격으로 동기화한다(`JADECODE_NO_CONNECTORS=1`이면 끈다). 답장은 사람이 앱에서 승인해 보낼 때만 `reply` 도구로 나간다.
+
+첫 프리셋은 Slack(`@modelcontextprotocol/server-slack`, Node.js 필요)이다. 다른 출처는 `custom`으로 직접 적는다.
+
+```toml
+[[connector]]
+name = "mail"
+project = "web"
+preset = "custom"
+command = "npx"
+args = ["-y", "some-mail-mcp"]
+interval_sec = 120
+[connector.env]
+MAIL_TOKEN = "…"
+[connector.fetch]
+tool = "list_unread"          # 가져오기 도구
+args = { limit = 20 }
+items = "messages"            # 결과 JSON에서 목록 경로
+id = "id"                     # 항목별 필드 경로
+title = "subject"
+body = "snippet"
+from = "from"
+url = "https://mail.example/{id}"
+skip_if = ""                  # 이 필드가 있으면 건너뜀(예: 봇 메시지)
+[connector.reply]             # 선택: 없으면 답장 불가
+tool = "send_reply"
+args = { message_id = "{id}", text = "{text}" }
+```
+
+RPC: `intake.add|list|get|triage|close|reply|sync_github`, `connectors.list|presets|save|remove|sync|test`.
+
 ## 명세 대비 남은 것
 
 - **단계 종료 조건·경로 검사·사람 절차 강제** — 지금 `card.advance`는 경로만 따라간다. 종료 조건(명령 검사·봇 판정·사람 승인)과 `policy`의 사람 절차 검사는 다음 단계.

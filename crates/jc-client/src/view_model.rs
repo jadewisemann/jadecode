@@ -207,6 +207,7 @@ pub fn is_thread_event(kind: &str) -> bool {
                 | "permission.requested"
                 | "permission.resolved"
                 | "instance.file_written"
+                | "card.from_intake"
         )
 }
 
@@ -382,6 +383,25 @@ pub fn thread_item(e: &EventRow) -> ThreadItem {
             format!("카드 생성 · {}", txt("title")),
             "muted",
         ),
+        "card.from_intake" => (
+            Bubble::System,
+            String::new(),
+            format!(
+                "출처 · {}{}{}",
+                b["source"].as_str().unwrap_or(""),
+                if txt("from").is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", txt("from"))
+                },
+                if txt("url").is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", txt("url"))
+                }
+            ),
+            "info",
+        ),
         "card.stage_changed" => (
             Bubble::System,
             String::new(),
@@ -438,6 +458,58 @@ pub fn thread_item(e: &EventRow) -> ThreadItem {
         head,
         text,
         tone,
+    }
+}
+
+/// 수집 항목 상태 라벨.
+pub fn intake_state_label(s: &str) -> &'static str {
+    match s {
+        "new" => "새로 들어옴",
+        "carded" => "카드로 진행 중",
+        "reply_pending" => "회신 대기",
+        "archived" => "보관",
+        "closed" => "닫힘",
+        _ => "기타",
+    }
+}
+
+/// 수집함 묶음: 새로 들어옴 → 회신 대기 → 진행 중 → (보관·닫힘).
+pub fn group_intake(
+    items: &[crate::board::IntakeItem],
+    project: Option<&str>,
+) -> Vec<(&'static str, Vec<crate::board::IntakeItem>)> {
+    let mut out = vec![];
+    for st in ["new", "reply_pending", "carded", "closed", "archived"] {
+        let mut v: Vec<_> = items
+            .iter()
+            .filter(|i| i.state == st && project.map(|p| i.project == p).unwrap_or(true))
+            .cloned()
+            .collect();
+        v.sort_by_key(|i| std::cmp::Reverse(i.seq));
+        if !v.is_empty() {
+            out.push((st, v));
+        }
+    }
+    out
+}
+
+/// 사람이 챙길 외부 일 수(새로 들어옴 + 회신 대기).
+pub fn intake_attention(items: &[crate::board::IntakeItem]) -> usize {
+    items
+        .iter()
+        .filter(|i| i.state == "new" || i.state == "reply_pending")
+        .count()
+}
+
+/// 수집 항목에서 카드 본문으로 넘길 짧은 요약(원문 앞부분).
+pub fn default_brief(body: &str, title: &str) -> String {
+    let t = body.trim();
+    let base = if t.is_empty() { title.trim() } else { t };
+    let one: String = base.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > 400 {
+        one.chars().take(400).collect::<String>() + "…"
+    } else {
+        one
     }
 }
 
@@ -826,6 +898,34 @@ mod tests {
                 MdBlock::Quote("인용".into()),
             ]
         );
+    }
+
+    #[test]
+    fn intake_groups_and_counts() {
+        use crate::board::IntakeItem;
+        let it = |id: &str, st: &str, p: &str, seq: u64| IntakeItem {
+            id: id.into(),
+            state: st.into(),
+            project: p.into(),
+            seq,
+            ..Default::default()
+        };
+        let items = vec![
+            it("a", "new", "p", 1),
+            it("b", "new", "p", 2),
+            it("c", "reply_pending", "p", 3),
+            it("d", "archived", "p", 4),
+            it("e", "new", "q", 5),
+        ];
+        let g = group_intake(&items, Some("p"));
+        assert_eq!(
+            g.iter().map(|x| x.0).collect::<Vec<_>>(),
+            vec!["new", "reply_pending", "archived"]
+        );
+        assert_eq!(g[0].1[0].id, "b");
+        assert_eq!(intake_attention(&items), 4);
+        assert_eq!(default_brief("  a\n b  ", "t"), "a b");
+        assert_eq!(default_brief("", "제목"), "제목");
     }
 
     #[test]

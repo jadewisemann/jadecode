@@ -1,8 +1,8 @@
 //! GPUI 화면.
 //!
 //! 구성(왼쪽부터):
-//! 1. 사이드바: 받은편지함(승인·질문) · 오케스트레이터 · 보드 · 에이전트, 프로젝트 목록
-//! 2. 가운데: 카드 목록(급한 순) 또는 칸반(단계 열)
+//! 1. 사이드바: 수집함(바깥 사이클) · 확인 요청(승인·질문) · 오케스트레이터 · 보드 · 에이전트 · 연결, 프로젝트 목록
+//! 2. 가운데: 카드 목록(급한 순) 또는 칸반(수집 · 단계 열 · 회신 대기)
 //! 3. 오른쪽: 카드 스레드(에이전트 대화·도구 호출·권한 승인 + 입력), task.md, 변경사항(diff)
 //!
 //! 데이터는 `board::Board`가 갖는다. 쓰기 동작은 **별도 연결**로 백그라운드 스레드에서
@@ -12,7 +12,8 @@ pub mod input;
 pub mod theme;
 
 use crate::board::{
-    AgentInfo, Board, BoardSnapshot, BotInfo, Card as CardData, CardDetail, EventRow,
+    AgentInfo, Board, BoardSnapshot, BotInfo, Card as CardData, CardDetail, ConnectorInfo,
+    EventRow, IntakeItem,
 };
 use crate::format;
 use crate::view_model::{self as vm, Attention, Bubble, DiffKind, InboxItem, MdBlock};
@@ -49,10 +50,12 @@ actions!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
+    Intake,
     Inbox,
     Orchestrator,
     Board,
     Agents,
+    Connectors,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +127,39 @@ enum Action {
         card: Option<String>,
         terminal: bool,
     },
+    LoadIntake,
+    AddMemo {
+        project: String,
+        text: String,
+    },
+    TriageToCard {
+        id: String,
+        title: String,
+        brief: String,
+        start: bool,
+        project: String,
+        agent: Option<String>,
+    },
+    Archive(String),
+    CloseIntake(String),
+    Reply {
+        id: String,
+        text: String,
+    },
+    AskOrchestratorTriage {
+        project: String,
+        id: String,
+    },
+    LoadConnectors,
+    SaveConnector {
+        name: String,
+        project: String,
+        preset: String,
+        fields: serde_json::Value,
+    },
+    RemoveConnector(String),
+    SyncConnectors(Option<String>),
+    TestConnector(String),
 }
 
 /// 백그라운드 동작의 결과.
@@ -136,6 +172,8 @@ enum Outcome {
     ProjectAdded(String),
     CardAdded(String),
     Agents(Vec<AgentInfo>, Vec<BotInfo>),
+    Intake(Vec<IntakeItem>),
+    Connectors(Vec<ConnectorInfo>),
 }
 
 /// 구독 스레드와 화면이 나누는 상태.
@@ -160,6 +198,16 @@ pub struct Workspace {
     diffs: HashMap<String, String>,
     agents: Vec<AgentInfo>,
     bots: Vec<BotInfo>,
+    intake: Vec<IntakeItem>,
+    connectors: Vec<ConnectorInfo>,
+    reply_target: Option<String>,
+    last_intake_seq: u64,
+    conn_project: Option<String>,
+    memo_input: Entity<TextInput>,
+    reply_input: Entity<TextInput>,
+    conn_token: Entity<TextInput>,
+    conn_team: Entity<TextInput>,
+    conn_channel: Entity<TextInput>,
     agent_choice: Option<String>,
     modal: Option<Modal>,
     new_card_start: bool,
@@ -495,6 +543,94 @@ fn run_action(
             let bots = rt.block_on(b.bots()).unwrap_or_default();
             Outcome::Agents(agents, bots)
         }
+        Action::LoadIntake => match rt.block_on(b.intake_list(None)) {
+            Ok(v) => Outcome::Intake(v),
+            Err(e) => fail("수집함 읽기 실패", e),
+        },
+        Action::AddMemo { project, text } => {
+            let (title, body) = match text.split_once(" - ") {
+                Some((t, b)) => (t.trim().to_string(), b.trim().to_string()),
+                None => (text.trim().to_string(), String::new()),
+            };
+            match rt.block_on(b.intake_add(&project, &title, &body)) {
+                Ok(_) => Outcome::Info("수집함에 넣었다".into()),
+                Err(e) => fail("메모 넣기 실패", e),
+            }
+        }
+        Action::TriageToCard {
+            id,
+            title,
+            brief,
+            start,
+            project,
+            agent,
+        } => match rt.block_on(b.intake_triage(&id, "card", Some(&title), Some(&brief))) {
+            Ok(Some(card)) => {
+                if start {
+                    if let Err(e) = rt.block_on(b.start_worker(&project, &card, agent.as_deref())) {
+                        return fail("카드는 만들었지만 워커 시작 실패", e);
+                    }
+                }
+                Outcome::CardAdded(card)
+            }
+            Ok(None) => Outcome::Error("카드를 만들지 못했다".into()),
+            Err(e) => fail("카드 만들기 실패", e),
+        },
+        Action::Archive(id) => match rt.block_on(b.intake_triage(&id, "archive", None, None)) {
+            Ok(_) => Outcome::Info("보관했다".into()),
+            Err(e) => fail("보관 실패", e),
+        },
+        Action::CloseIntake(id) => match rt.block_on(b.intake_close(&id)) {
+            Ok(()) => Outcome::Info("닫았다".into()),
+            Err(e) => fail("닫기 실패", e),
+        },
+        Action::Reply { id, text } => match rt.block_on(b.intake_reply(&id, &text)) {
+            Ok(()) => Outcome::Info("답장을 보냈다".into()),
+            Err(e) => fail("답장 보내기 실패", e),
+        },
+        Action::AskOrchestratorTriage { project, id } => {
+            let text = format!(
+                "수집 항목 {id}를 `intake_get`으로 읽고 `intake_triage`로 분류해 주세요. 코드 작업이면 원문 없이도 일할 수 있게 짧은 brief와 done_when을 써서 카드로 만들고 워커를 붙여 주세요."
+            );
+            match rt.block_on(b.send_to_orchestrator(&project, &text)) {
+                Ok(()) => Outcome::Info("오케스트레이터에게 분류를 맡겼다".into()),
+                Err(e) => fail("오케스트레이터에게 보내기 실패", e),
+            }
+        }
+        Action::LoadConnectors => match rt.block_on(b.connectors()) {
+            Ok(v) => Outcome::Connectors(v),
+            Err(e) => fail("커넥터 읽기 실패", e),
+        },
+        Action::SaveConnector {
+            name,
+            project,
+            preset,
+            fields,
+        } => match rt.block_on(b.connector_save(&name, &project, &preset, fields)) {
+            Ok(()) => match rt.block_on(b.connector_sync(Some(&name))) {
+                Ok((n, errs)) if errs.is_empty() => {
+                    Outcome::Info(format!("{name} 연결됨 · 새 항목 {n}개"))
+                }
+                Ok((_, errs)) => {
+                    Outcome::Error(format!("저장했지만 동기화 실패: {}", errs.join("; ")))
+                }
+                Err(e) => fail("저장했지만 동기화 실패", e),
+            },
+            Err(e) => fail("커넥터 저장 실패", e),
+        },
+        Action::RemoveConnector(name) => match rt.block_on(b.connector_remove(&name)) {
+            Ok(()) => Outcome::Info(format!("{name} 연결을 지웠다")),
+            Err(e) => fail("지우기 실패", e),
+        },
+        Action::SyncConnectors(name) => match rt.block_on(b.connector_sync(name.as_deref())) {
+            Ok((n, errs)) if errs.is_empty() => Outcome::Info(format!("동기화 · 새 항목 {n}개")),
+            Ok((_, errs)) => Outcome::Error(format!("동기화 실패: {}", errs.join("; "))),
+            Err(e) => fail("동기화 실패", e),
+        },
+        Action::TestConnector(name) => match rt.block_on(b.connector_test(&name)) {
+            Ok(tools) => Outcome::Info(format!("{name} 정상 · 도구 {}개", tools.len())),
+            Err(e) => fail("연결 시험 실패", e),
+        },
         Action::OpenFolder { card, terminal } => {
             let Some(ws) = ws else {
                 return Outcome::Error("워크스페이스 위치를 모른다".into());
@@ -686,6 +822,12 @@ impl Workspace {
         let project_repo = cx.new(|cx| TextInput::new(cx, "레포 이름 (선택)"));
         let card_title = cx.new(|cx| TextInput::new(cx, "무엇을 할까요? (카드 제목)"));
         let card_body = cx.new(|cx| TextInput::new(cx, "자세한 설명 (선택)"));
+        let memo_input =
+            cx.new(|cx| TextInput::new(cx, "직접 메모 넣기 · \"제목 - 내용\" · Enter"));
+        let reply_input = cx.new(|cx| TextInput::new(cx, "답장 내용 · Enter로 보내기"));
+        let conn_token = cx.new(|cx| TextInput::new(cx, "봇 토큰 (xoxb-…)"));
+        let conn_team = cx.new(|cx| TextInput::new(cx, "워크스페이스 ID (T…)"));
+        let conn_channel = cx.new(|cx| TextInput::new(cx, "채널 ID (C…)"));
 
         let mut subs = vec![];
         subs.push(cx.subscribe_in(
@@ -749,6 +891,53 @@ impl Workspace {
             },
         ));
 
+        subs.push(cx.subscribe_in(
+            &memo_input,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Submitted(text) if !text.trim().is_empty() => {
+                    this.add_memo(text.clone(), cx)
+                }
+                InputEvent::Submitted(_) => {}
+                InputEvent::Cancelled => window.focus(&this.focus),
+                InputEvent::Changed => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &reply_input,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Submitted(text) if !text.trim().is_empty() => {
+                    this.send_reply(text.clone(), cx)
+                }
+                InputEvent::Submitted(_) => {}
+                InputEvent::Cancelled => {
+                    this.reply_target = None;
+                    window.focus(&this.focus);
+                    cx.notify();
+                }
+                InputEvent::Changed => {}
+            },
+        ));
+        for (from, to) in [
+            (conn_token.clone(), Some(conn_team.clone())),
+            (conn_team.clone(), Some(conn_channel.clone())),
+            (conn_channel.clone(), None),
+        ] {
+            subs.push(cx.subscribe_in(
+                &from,
+                window,
+                move |this, _, ev: &InputEvent, window, cx| {
+                    if let InputEvent::Submitted(_) = ev {
+                        match &to {
+                            Some(next) => window.focus(&next.focus_handle(cx)),
+                            None => this.save_slack(cx),
+                        }
+                    }
+                },
+            ));
+        }
+
         // 결과·스냅숏 변화를 화면에 반영하는 주기 작업.
         cx.spawn(async move |this, cx| loop {
             cx.background_executor()
@@ -761,6 +950,8 @@ impl Workspace {
         .detach();
 
         let _ = tx.send(Action::LoadAgents);
+        let _ = tx.send(Action::LoadIntake);
+        let _ = tx.send(Action::LoadConnectors);
         Self {
             live,
             seen_version: 0,
@@ -789,6 +980,16 @@ impl Workspace {
             project_repo,
             card_title,
             card_body,
+            intake: vec![],
+            connectors: vec![],
+            reply_target: None,
+            last_intake_seq: 0,
+            conn_project: None,
+            memo_input,
+            reply_input,
+            conn_token,
+            conn_team,
+            conn_channel,
             thread_scroll: ScrollHandle::new(),
             last_thread_len: 0,
             last_title: String::new(),
@@ -844,6 +1045,8 @@ impl Workspace {
                     self.agents = a;
                     self.bots = b;
                 }
+                Outcome::Intake(v) => self.intake = v,
+                Outcome::Connectors(v) => self.connectors = v,
             }
         }
         let v = self.live.version.load(Ordering::Relaxed);
@@ -851,6 +1054,29 @@ impl Workspace {
             self.seen_version = v;
             dirty = true;
             self.notify_new_inbox();
+            // 수집함·카드 상태가 바뀌었으면 수집함을 다시 읽는다.
+            let snap = self.snap();
+            let newest = snap
+                .recent
+                .iter()
+                .filter(|e| e.kind.starts_with("intake.") || e.kind == "card.status_changed")
+                .map(|e| e.seq)
+                .max()
+                .unwrap_or(0);
+            if newest > self.last_intake_seq {
+                if self.last_intake_seq > 0 {
+                    let fresh = snap
+                        .recent
+                        .iter()
+                        .filter(|e| e.seq > self.last_intake_seq && e.kind == "intake.received")
+                        .count();
+                    if fresh > 0 {
+                        notify_desktop("jadecode · 수집함", &format!("새로 들어온 일 {fresh}건"));
+                    }
+                }
+                self.last_intake_seq = newest;
+                self.send(Action::LoadIntake);
+            }
         }
         if let Some((_, _, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(6) {
@@ -861,6 +1087,66 @@ impl Workspace {
         if dirty {
             cx.notify();
         }
+    }
+
+    fn current_or_first_project(&self) -> Option<String> {
+        self.project
+            .clone()
+            .or_else(|| self.snap().projects.first().map(|p| p.slug.clone()))
+    }
+
+    fn add_memo(&mut self, text: String, cx: &mut Context<Self>) {
+        let Some(project) = self.current_or_first_project() else {
+            self.toast("먼저 프로젝트를 만드세요", true);
+            cx.notify();
+            return;
+        };
+        self.send(Action::AddMemo { project, text });
+        cx.notify();
+    }
+
+    fn send_reply(&mut self, text: String, cx: &mut Context<Self>) {
+        let Some(id) = self.reply_target.clone() else {
+            return;
+        };
+        self.send(Action::Reply { id, text });
+        self.reply_target = None;
+        self.reply_input.update(cx, |i, cx| i.clear(cx));
+        cx.notify();
+    }
+
+    fn save_slack(&mut self, cx: &mut Context<Self>) {
+        let token = self.conn_token.read(cx).text();
+        let team = self.conn_team.read(cx).text();
+        let channel = self.conn_channel.read(cx).text();
+        let Some(project) = self
+            .conn_project
+            .clone()
+            .or_else(|| self.current_or_first_project())
+        else {
+            self.toast("먼저 프로젝트를 만드세요", true);
+            cx.notify();
+            return;
+        };
+        if token.trim().is_empty() || channel.trim().is_empty() {
+            self.toast("봇 토큰과 채널 ID를 넣으세요", true);
+            cx.notify();
+            return;
+        }
+        let name = format!("slack-{}", channel.trim().to_lowercase());
+        self.send(Action::SaveConnector {
+            name,
+            project,
+            preset: "slack".into(),
+            fields: serde_json::json!({"token": token.trim(), "team_id": team.trim(), "channel_id": channel.trim()}),
+        });
+        self.send(Action::LoadConnectors);
+        self.conn_token.update(cx, |i, cx| i.clear(cx));
+        self.toast(
+            "연결을 저장하고 처음 동기화하는 중… (npx가 처음 받는 데 시간이 걸릴 수 있습니다)",
+            false,
+        );
+        cx.notify();
     }
 
     /// 받은편지함에 새로 들어온 것을 데스크톱 알림으로 알린다.
@@ -1113,10 +1399,23 @@ impl Workspace {
                         }),
                     )),
             );
+        let intake_n = vm::intake_attention(&self.intake);
         col = col
             .child(self.nav_item(
+                "nav-intake",
+                "수집함",
+                self.nav == Nav::Intake,
+                Some((intake_n, VIOLET)),
+                cx,
+                |t, window, cx| {
+                    t.nav = Nav::Intake;
+                    let _ = t.tx.send(Action::LoadIntake);
+                    window.focus(&t.memo_input.focus_handle(cx));
+                },
+            ))
+            .child(self.nav_item(
                 "nav-inbox",
-                "받은편지함",
+                "확인 요청",
                 self.nav == Nav::Inbox,
                 Some((inbox_n, AMBER)),
                 cx,
@@ -1164,6 +1463,17 @@ impl Workspace {
                 |t, _, _| {
                     t.nav = Nav::Agents;
                     let _ = t.tx.send(Action::LoadAgents);
+                },
+            ))
+            .child(self.nav_item(
+                "nav-connectors",
+                "연결",
+                self.nav == Nav::Connectors,
+                None,
+                cx,
+                |t, _, _| {
+                    t.nav = Nav::Connectors;
+                    let _ = t.tx.send(Action::LoadConnectors);
                 },
             ));
 
@@ -1496,14 +1806,7 @@ impl Workspace {
     fn kanban_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let snap = self.snap();
         let stages = vm::ordered_stages(&snap, self.project.as_deref());
-        let mut cols = div()
-            .id("kanban")
-            .flex()
-            .flex_row()
-            .gap_3()
-            .p_4()
-            .size_full()
-            .overflow_x_scroll();
+        let mut cols = div().flex().flex_row().gap_3().flex_1().min_h(px(0.));
         for (si, stage) in stages.iter().enumerate() {
             let cards: Vec<CardData> = snap
                 .stage_cards(self.project.as_deref(), stage)
@@ -1588,7 +1891,143 @@ impl Workspace {
             }
             cols = cols.child(col);
         }
-        cols.into_any_element()
+        let project = self.project.as_deref();
+        let pick = |state: &str| -> Vec<IntakeItem> {
+            self.intake
+                .iter()
+                .filter(|i| i.state == state && project.is_none_or(|p| i.project == p))
+                .cloned()
+                .collect()
+        };
+        let zone = |id: &'static str, label: &'static str, color: u32, body: AnyElement| {
+            div()
+                .id(id)
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap_2()
+                .h_full()
+                .child(div().px_1().text_xs().text_color(rgb(color)).child(label))
+                .child(body)
+        };
+        div()
+            .id("kanban")
+            .flex()
+            .flex_row()
+            .gap_4()
+            .p_4()
+            .size_full()
+            .overflow_x_scroll()
+            .child(zone(
+                "zone-in",
+                "바깥 사이클 · 들어온 일",
+                VIOLET,
+                self.intake_column("kc-new", "수집", VIOLET, pick("new"), cx),
+            ))
+            .child(zone(
+                "zone-code",
+                "안쪽 사이클 · 코드",
+                ACCENT,
+                cols.into_any_element(),
+            ))
+            .child(zone(
+                "zone-out",
+                "바깥 사이클 · 돌려줄 일",
+                AMBER,
+                self.intake_column("kc-reply", "회신 대기", AMBER, pick("reply_pending"), cx),
+            ))
+            .into_any_element()
+    }
+
+    /// 칸반 바깥 사이클 열: 수집함 항목 타일. 누르면 수집함으로 간다.
+    fn intake_column(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        color: u32,
+        items: Vec<IntakeItem>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut col = div()
+            .id(id)
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap_2()
+            .w(px(232.))
+            .p_2()
+            .rounded_lg()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(LINE))
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .px_1()
+                    .pb_1()
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .child(label)
+                    .child(items.len().to_string()),
+            );
+        if items.is_empty() {
+            col = col.child(
+                div()
+                    .px_1()
+                    .text_xs()
+                    .text_color(rgb(FAINT))
+                    .child("비어 있음"),
+            );
+        }
+        for (i, it) in items.iter().enumerate() {
+            let src = if it.connector.is_empty() {
+                it.source.clone()
+            } else {
+                it.connector.clone()
+            };
+            let card = it.card.clone();
+            col = col.child(
+                div()
+                    .id((id, i))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded_md()
+                    .bg(rgb(RAISED))
+                    .border_l_2()
+                    .border_color(rgb(color))
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .cursor_pointer()
+                    .child(div().text_xs().text_color(rgb(FAINT)).truncate().child(
+                        if it.from.is_empty() {
+                            src
+                        } else {
+                            format!("{src} · {}", it.from)
+                        },
+                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(TEXT))
+                            .child(it.title.clone()),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _w, cx| match &card {
+                            // 회신 대기 항목은 끝난 카드를 먼저 보여 준다.
+                            Some(c) => this.open_card(c.clone(), cx),
+                            None => {
+                                this.nav = Nav::Intake;
+                                cx.notify();
+                            }
+                        }),
+                    ),
+            );
+        }
+        col.into_any_element()
     }
 
     fn welcome(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2952,6 +3391,399 @@ impl Workspace {
         )
     }
 
+    // ---------- 수집함(바깥 사이클) ----------
+
+    fn intake_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let groups = vm::group_intake(&self.intake, self.project.as_deref());
+        let has_conn = !self.connectors.is_empty();
+        let mut col = div()
+            .id("intake")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_5()
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_lg().text_color(rgb(TEXT)).child("수집함"))
+                    .child(div().flex_1())
+                    .child(
+                        button("ik-sync", "지금 동기화", Btn::Ghost).on_click(cx.listener(
+                            |this, _: &ClickEvent, _w, cx| {
+                                this.send(Action::SyncConnectors(None));
+                                this.send(Action::LoadIntake);
+                                this.send(Action::LoadConnectors);
+                                this.toast("연결된 출처를 동기화하는 중…", false);
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
+                        button("ik-conn", "연결 관리", Btn::Subtle).on_click(cx.listener(
+                            |this, _: &ClickEvent, _w, cx| {
+                                this.nav = Nav::Connectors;
+                                this.send(Action::LoadConnectors);
+                                cx.notify();
+                            },
+                        )),
+                    ),
+            )
+            .child(div().text_sm().text_color(rgb(MUTED)).child(
+                "메신저·GitHub·메모처럼 코드 밖에서 들어온 해야 할 일입니다. 카드로 만들면 \
+                 원문 대신 짧은 요약만 워커에게 넘어가고, 카드가 끝나면 회신 대기로 돌아옵니다.",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .py_2()
+                    .child(self.memo_input.clone()),
+            );
+        if groups.is_empty() {
+            col = col.child(empty_state(
+                "수집함이 비어 있습니다",
+                if has_conn {
+                    "연결된 출처에서 새 메시지가 오면 여기에 모입니다. 위 칸에 직접 메모를 넣을 수도 있습니다."
+                } else {
+                    "왼쪽 '연결'에서 Slack 같은 출처를 연결하거나, 위 칸에 직접 메모를 넣어 보세요."
+                },
+            ));
+        }
+        let mut n = 0usize;
+        for (label, items) in groups {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .pt_3()
+                    .text_xs()
+                    .text_color(rgb(match label {
+                        "새로 들어옴" => VIOLET,
+                        "회신 대기" => AMBER,
+                        _ => FAINT,
+                    }))
+                    .child(label)
+                    .child(div().text_color(rgb(FAINT)).child(items.len().to_string())),
+            );
+            for it in items {
+                n += 1;
+                col = col.child(self.intake_row(n, &it, cx));
+            }
+        }
+        col.into_any_element()
+    }
+
+    fn intake_row(&self, n: usize, it: &IntakeItem, cx: &mut Context<Self>) -> Div {
+        let color = match it.state.as_str() {
+            "new" => VIOLET,
+            "reply_pending" => AMBER,
+            "carded" => ACCENT,
+            _ => LINE,
+        };
+        let preview: String = it.body.chars().take(320).collect();
+        let source = if it.connector.is_empty() {
+            it.source.clone()
+        } else {
+            it.connector.clone()
+        };
+        let mut row = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(PANEL))
+            .border_l_2()
+            .border_color(rgb(color))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .text_xs()
+                    .child(div().text_color(rgb(color)).child(source))
+                    .children(
+                        (!it.from.is_empty())
+                            .then(|| div().text_color(rgb(MUTED)).child(it.from.clone())),
+                    )
+                    .child(div().text_color(rgb(FAINT)).child(it.project.clone()))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_color(rgb(FAINT))
+                            .child(format::ago(now_ms(), it.ts)),
+                    ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .child(it.title.clone()),
+            )
+            .children(
+                (!preview.is_empty() && preview != it.title)
+                    .then(|| div().text_xs().text_color(rgb(MUTED)).child(preview)),
+            )
+            .children((!it.url.is_empty()).then(|| {
+                div()
+                    .text_xs()
+                    .text_color(rgb(FAINT))
+                    .truncate()
+                    .child(it.url.clone())
+            }));
+        let id = it.id.clone();
+        let project = it.project.clone();
+        let mut btns = div().flex().flex_row().flex_wrap().gap_2().pt_1();
+        match it.state.as_str() {
+            "new" => {
+                let (i1, p1, t1) = (id.clone(), project.clone(), it.title.clone());
+                let brief = vm::default_brief(&it.body, &it.title);
+                let (i2, p2) = (id.clone(), project.clone());
+                let i3 = id.clone();
+                btns = btns
+                    .child(
+                        button(("ik-card", n), "카드로 만들고 시작", Btn::Primary).on_click(
+                            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                this.send(Action::TriageToCard {
+                                    id: i1.clone(),
+                                    title: t1.clone(),
+                                    brief: brief.clone(),
+                                    start: true,
+                                    project: p1.clone(),
+                                    agent: this.agent_choice.clone(),
+                                });
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        button(("ik-orch", n), "오케스트레이터에게 맡기기", Btn::Ghost).on_click(
+                            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                this.send(Action::AskOrchestratorTriage {
+                                    project: p2.clone(),
+                                    id: i2.clone(),
+                                });
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        button(("ik-arch", n), "보관", Btn::Subtle).on_click(cx.listener(
+                            move |this, _: &ClickEvent, _w, cx| {
+                                this.send(Action::Archive(i3.clone()));
+                                cx.notify();
+                            },
+                        )),
+                    );
+            }
+            "reply_pending" => {
+                let can_reply = self
+                    .connectors
+                    .iter()
+                    .any(|c| c.name == it.connector && c.can_reply);
+                let editing = self.reply_target.as_deref() == Some(&it.id);
+                if editing {
+                    row = row.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .pt_1()
+                            .child(self.reply_input.clone())
+                            .child(button(("ik-send", n), "보내기", Btn::Primary).on_click(
+                                cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                    let text = this.reply_input.read(cx).text();
+                                    if !text.trim().is_empty() {
+                                        this.send_reply(text, cx);
+                                    }
+                                }),
+                            )),
+                    );
+                } else if can_reply {
+                    let i1 = id.clone();
+                    btns = btns.child(button(("ik-reply", n), "답장 쓰기", Btn::Primary).on_click(
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.reply_target = Some(i1.clone());
+                            window.focus(&this.reply_input.focus_handle(cx));
+                            cx.notify();
+                        }),
+                    ));
+                }
+                let i2 = id.clone();
+                btns = btns.child(
+                    button(("ik-close", n), "답장 없이 닫기", Btn::Subtle).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _w, cx| {
+                            if this.reply_target.as_deref() == Some(&i2) {
+                                this.reply_target = None;
+                            }
+                            this.send(Action::CloseIntake(i2.clone()));
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
+            _ => {}
+        }
+        if let Some(card) = it.card.clone() {
+            btns = btns.child(button(("ik-open", n), "카드 열기", Btn::Ghost).on_click(
+                cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                    this.nav = Nav::Board;
+                    this.card_tab = CardTab::Thread;
+                    this.open_card(card.clone(), cx);
+                }),
+            ));
+        }
+        row.child(btns)
+    }
+
+    // ---------- 연결(커넥터) ----------
+
+    fn connectors_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let snap = self.snap();
+        let mut col = div()
+            .id("connectors")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_5()
+            .size_full()
+            .overflow_y_scroll()
+            .child(div().text_lg().text_color(rgb(TEXT)).child("연결"))
+            .child(div().text_sm().text_color(rgb(MUTED)).child(
+                "MCP 서버로 바깥 출처를 연결합니다. 연결마다 주기적으로 새 메시지를 읽어 \
+                 수집함에 넣고, 사람이 승인한 답장만 다시 보냅니다. 토큰은 이 컴퓨터의 \
+                 .jadecode/connectors.toml(권한 0600)에만 저장됩니다.",
+            ));
+
+        col = col.child(section_label("연결된 출처"));
+        if self.connectors.is_empty() {
+            col = col.child(
+                div()
+                    .px_3()
+                    .text_sm()
+                    .text_color(rgb(FAINT))
+                    .child("아직 연결이 없습니다."),
+            );
+        }
+        for (n, c) in self.connectors.iter().enumerate() {
+            let (scol, stext) = match &c.status {
+                Some((true, s)) => (GREEN, s.clone()),
+                Some((false, s)) => (RED, s.clone()),
+                None => (FAINT, "아직 동기화하지 않음".to_string()),
+            };
+            let (n1, n2, n3) = (c.name.clone(), c.name.clone(), c.name.clone());
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_3()
+                    .rounded_md()
+                    .bg(rgb(PANEL))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(dot(if c.enabled { scol } else { FAINT }))
+                            .child(div().text_sm().text_color(rgb(TEXT)).child(c.name.clone()))
+                            .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
+                                "{} · {}{}{}",
+                                c.preset,
+                                c.project,
+                                if c.can_reply { " · 답장 가능" } else { "" },
+                                if c.enabled { "" } else { " · 꺼짐" }
+                            )))
+                            .child(div().flex_1())
+                            .child(button(("cn-sync", n), "동기화", Btn::Ghost).on_click(
+                                cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                    this.send(Action::SyncConnectors(Some(n1.clone())));
+                                    this.send(Action::LoadConnectors);
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(button(("cn-test", n), "시험", Btn::Subtle).on_click(
+                                cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                    this.send(Action::TestConnector(n2.clone()));
+                                    this.send(Action::LoadConnectors);
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(button(("cn-del", n), "삭제", Btn::Danger).on_click(
+                                cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                    this.send(Action::RemoveConnector(n3.clone()));
+                                    this.send(Action::LoadConnectors);
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+                    .child(div().text_xs().text_color(rgb(scol)).child(stext)),
+            );
+        }
+
+        // Slack 추가 양식
+        let target = self
+            .conn_project
+            .clone()
+            .or_else(|| self.current_or_first_project())
+            .unwrap_or_default();
+        let mut projects = div().flex().flex_row().flex_wrap().gap_1().items_center();
+        projects = projects.child(div().text_xs().text_color(rgb(MUTED)).child("프로젝트"));
+        for (i, p) in snap.projects.iter().enumerate() {
+            let slug = p.slug.clone();
+            projects = projects.child(
+                chip(("cn-proj", i), p.slug.clone(), p.slug == target).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _w, cx| {
+                        this.conn_project = Some(slug.clone());
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+        col = col.child(section_label("Slack 채널 연결")).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded_md()
+                .bg(rgb(PANEL))
+                .child(div().text_xs().text_color(rgb(MUTED)).child(
+                    "Slack 앱을 만들고 봇 권한 channels:history, chat:write, users:read를 준 뒤 \
+                     채널에 봇을 초대하세요. Node.js(npx)가 설치되어 있어야 합니다.",
+                ))
+                .child(projects)
+                .child(self.conn_token.clone())
+                .child(self.conn_team.clone())
+                .child(self.conn_channel.clone())
+                .child(
+                    div().flex().flex_row().child(
+                        button("cn-save", "저장하고 연결", Btn::Primary).on_click(
+                            cx.listener(|this, _: &ClickEvent, _w, cx| this.save_slack(cx)),
+                        ),
+                    ),
+                ),
+        );
+        col = col.child(section_label("다른 MCP 서버")).child(
+            div().px_3().text_xs().text_color(rgb(MUTED)).child(
+                "이메일·Linear·Notion 같은 다른 출처는 .jadecode/connectors.toml에 \
+                     preset = \"custom\"으로 command·args·fetch(도구 이름과 필드 경로)를 적으면 \
+                     같은 방식으로 수집됩니다. 형식은 docs/implementation.md에 있습니다.",
+            ),
+        );
+        col.into_any_element()
+    }
+
     fn toast_view(&self) -> Option<AnyElement> {
         let (msg, err, _) = self.toast.clone()?;
         Some(
@@ -3009,6 +3841,8 @@ impl Render for Workspace {
             Nav::Inbox => self.inbox_page(cx),
             Nav::Orchestrator => self.orchestrator_page(cx),
             Nav::Agents => self.agents_page(cx),
+            Nav::Intake => self.intake_page(cx),
+            Nav::Connectors => self.connectors_page(cx),
         };
         let modal = self.modal_view(cx);
         let toast = self.toast_view();
