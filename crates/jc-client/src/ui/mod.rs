@@ -404,6 +404,10 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
         window
             .update(cx, |ws, window, cx| {
                 window.focus(&ws.focus_handle(cx));
+                // 화면 확인용: 화면을 차례로 띄우며 스크린샷을 찍고 끝난다(CI에서 쓴다).
+                if let Some(dir) = std::env::var_os("JADECODE_SHOTS") {
+                    ws.start_shot_tour(std::path::PathBuf::from(dir), window, cx);
+                }
             })
             .ok();
         cx.activate(true);
@@ -1332,6 +1336,137 @@ impl Workspace {
         if dirty {
             cx.notify();
         }
+    }
+
+    /// `JADECODE_SHOTS=<폴더>`: 화면을 하나씩 띄우고 `screencapture`로 찍은 뒤 끝낸다.
+    /// GPU가 있는 macOS CI에서 실제 픽셀을 확인하려고 쓴다.
+    fn start_shot_tour(
+        &mut self,
+        dir: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = std::fs::create_dir_all(&dir);
+        cx.spawn_in(window, async move |this, cx| {
+            let exec = cx.background_executor().clone();
+            let wait = |ms: u64| exec.timer(Duration::from_millis(ms));
+            wait(2500).await;
+            const STEPS: [&str; 15] = [
+                "01-board-list",
+                "02-board-kanban",
+                "03-card-thread",
+                "04-card-task",
+                "05-card-changes",
+                "06-intake",
+                "07-intake-reply",
+                "08-inbox",
+                "09-orchestrator",
+                "10-agents",
+                "11-connectors",
+                "12-new-card",
+                "13-new-project",
+                "14-composer-multiline",
+                "15-narrow",
+            ];
+            // 수집함에 데모 항목을 넣는다.
+            let _ = this.update(cx, |this, cx| {
+                if let Some(project) = this.current_or_first_project() {
+                    for t in [
+                        "로그인 페이지가 사파리에서 깨져요 - 고객 문의: iOS 17 사파리에서 로그인 버튼이 눌리지 않는다고 합니다.",
+                        "다음 주 배포 전에 의존성 업데이트 - 보안 공지가 두 건 올라왔습니다.",
+                        "결제 영수증 메일 문구 수정",
+                    ] {
+                        this.send(Action::AddMemo {
+                            project: project.clone(),
+                            text: t.into(),
+                        });
+                    }
+                }
+                this.send(Action::LoadIntake);
+                cx.notify();
+            });
+            wait(1500).await;
+            for (i, name) in STEPS.iter().enumerate() {
+                let ok = this
+                    .update_in(cx, |this, window, cx| {
+                        this.modal = None;
+                        let snap = this.snap();
+                        let first = snap
+                            .cards
+                            .iter()
+                            .find(|c| c.path.contains("safari"))
+                            .or(snap.cards.first())
+                            .map(|c| c.path.clone());
+                        match i {
+                            0 => {
+                                this.nav = Nav::Board;
+                                this.board_mode = BoardMode::List;
+                                this.selected_card = None;
+                            }
+                            1 => this.board_mode = BoardMode::Kanban,
+                            2 => {
+                                this.board_mode = BoardMode::List;
+                                if let Some(p) = first {
+                                    this.card_tab = CardTab::Thread;
+                                    this.open_card(p, cx);
+                                }
+                            }
+                            3 => this.card_tab = CardTab::Task,
+                            4 => this.card_tab = CardTab::Changes,
+                            5 => {
+                                this.selected_card = None;
+                                this.nav = Nav::Intake;
+                            }
+                            6 => {
+                                this.reply_target = this.intake.first().map(|x| x.id.clone());
+                            }
+                            7 => {
+                                this.reply_target = None;
+                                this.nav = Nav::Inbox;
+                            }
+                            8 => this.nav = Nav::Orchestrator,
+                            9 => this.nav = Nav::Agents,
+                            10 => this.nav = Nav::Connectors,
+                            11 => {
+                                this.nav = Nav::Board;
+                                this.open_modal(Modal::NewCard, window, cx);
+                            }
+                            12 => this.open_modal(Modal::NewProject, window, cx),
+                            13 => {
+                                this.nav = Nav::Board;
+                                if let Some(p) = first {
+                                    this.card_tab = CardTab::Thread;
+                                    this.open_card(p, cx);
+                                }
+                                this.composer.update(cx, |c, cx| {
+                                    c.set_text(
+                                        "첫 줄입니다.\n두 번째 줄은 조금 더 길게 써서 칸 너비를 넘기면 자동으로 줄이 바뀌는지 확인합니다. 한글과 English가 섞여도 괜찮은지 봅니다.\n세 번째 줄",
+                                        cx,
+                                    )
+                                });
+                                window.focus(&this.composer.focus_handle(cx));
+                            }
+                            _ => {
+                                window.resize(size(px(980.), px(640.)));
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+                wait(1800).await;
+                let path = dir.join(format!("{name}.png"));
+                let _ = std::process::Command::new("screencapture")
+                    .args(["-x", "-o"])
+                    .arg(&path)
+                    .status();
+                eprintln!("shot {}", path.display());
+            }
+            let _ = this.update(cx, |_, cx| cx.quit());
+        })
+        .detach();
     }
 
     fn current_or_first_project(&self) -> Option<String> {

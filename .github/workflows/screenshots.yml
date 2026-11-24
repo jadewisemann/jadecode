@@ -1,0 +1,66 @@
+name: Screenshots
+
+# macOS 러너에서 앱을 데모 데이터로 띄우고 화면마다 스크린샷을 찍는다.
+# 결과는 docs/screenshots/latest/ 로 같은 브랜치에 커밋한다(사람이 실제 픽셀을 보려고).
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths-ignore: ["docs/screenshots/**"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: shots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: shots
+      - name: build
+        run: cargo build --release --workspace --features jc-client/ui --bins
+      - name: demo workspace
+        run: |
+          set -euo pipefail
+          BIN="$PWD/target/release"
+          WS="$RUNNER_TEMP/jcw/ws"
+          mkdir -p "$(dirname "$WS")"
+          "$BIN/jadecode" init "$WS" --name demo
+          cd "$WS"
+          JADECODE_NO_CONNECTORS=1 "$BIN/jadecode" server > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/server.pid"
+          for i in $(seq 1 50); do [ -S .jadecode/jadecode.sock ] && break; sleep 0.2; done
+          python3 "$GITHUB_WORKSPACE/tools/demo-seed.py" "$WS" "$BIN/jadecode"
+          echo "WS=$WS" >> "$GITHUB_ENV"
+      - name: shots
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/docs/screenshots/latest"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          # 첫 실행 화면(빈 워크스페이스)
+          EMPTY="$RUNNER_TEMP/jcw/empty"
+          ./target/release/jadecode init "$EMPTY" --name empty
+          JADECODE_SHOTS="$RUNNER_TEMP/empty-shots" JADECODE_NO_CONNECTORS=1 \
+            perl -e 'alarm shift; exec @ARGV' 120 ./target/release/jadecode-client "$EMPTY" || true
+          cp "$RUNNER_TEMP/empty-shots/01-board-list.png" "$OUT/00-welcome.png" || true
+          # 데모 워크스페이스(떠 있는 서버에 붙는다)
+          JADECODE_SHOTS="$OUT" perl -e 'alarm shift; exec @ARGV' 180 ./target/release/jadecode-client "$WS" || true
+          ls -la "$OUT"
+          kill "$(cat "$RUNNER_TEMP/server.pid")" || true
+          tail -50 "$RUNNER_TEMP/server.log" || true
+      - name: commit
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots/latest
+          if git diff --cached --quiet; then echo "변화 없음"; exit 0; fi
+          git commit -m "chore: screenshots for ${GITHUB_SHA::7}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
