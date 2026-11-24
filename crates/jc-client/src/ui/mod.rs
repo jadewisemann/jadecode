@@ -369,7 +369,14 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
             },
         ]);
 
-        let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
+        // 화면이 작으면(노트북·CI 1024x768) 창이 화면 밖으로 나가지 않게 줄인다.
+        let (mut w, mut h) = (px(1360.), px(860.));
+        if let Some(d) = cx.primary_display() {
+            let ds = d.bounds().size;
+            w = w.min(ds.width * 0.94).max(px(960.));
+            h = h.min(ds.height * 0.80).max(px(600.));
+        }
+        let bounds = Bounds::centered(None, size(w, h), cx);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -404,6 +411,10 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
         window
             .update(cx, |ws, window, cx| {
                 window.focus(&ws.focus_handle(cx));
+                // 화면 확인용: 화면을 차례로 띄우며 스크린샷을 찍고 끝난다(CI에서 쓴다).
+                if let Some(dir) = std::env::var_os("JADECODE_SHOTS") {
+                    ws.start_shot_tour(std::path::PathBuf::from(dir), window, cx);
+                }
             })
             .ok();
         cx.activate(true);
@@ -939,6 +950,20 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Btn) -
         .child(label.into())
 }
 
+/// 탭 줄에 두는 작은 텍스트 버튼.
+fn link_btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    div()
+        .id(id.into())
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .text_xs()
+        .text_color(rgb(MUTED))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+        .child(label.into())
+}
+
 fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     div()
         .id(id.into())
@@ -1332,6 +1357,163 @@ impl Workspace {
         if dirty {
             cx.notify();
         }
+    }
+
+    /// `JADECODE_SHOTS=<폴더>`: 화면을 하나씩 띄우고 `screencapture`로 찍은 뒤 끝낸다.
+    /// GPU가 있는 macOS CI에서 실제 픽셀을 확인하려고 쓴다.
+    fn start_shot_tour(
+        &mut self,
+        dir: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = std::fs::create_dir_all(&dir);
+        cx.spawn_in(window, async move |this, cx| {
+            let exec = cx.background_executor().clone();
+            let wait = |ms: u64| exec.timer(Duration::from_millis(ms));
+            wait(2500).await;
+            const STEPS: [&str; 15] = [
+                "01-board-list",
+                "02-board-kanban",
+                "03-card-thread",
+                "04-card-task",
+                "05-card-changes",
+                "06-intake",
+                "07-kanban-card",
+                "08-inbox",
+                "09-orchestrator",
+                "10-agents",
+                "11-connectors",
+                "12-new-card",
+                "13-new-project",
+                "14-composer-multiline",
+                "15-narrow",
+            ];
+            // 수집함에 데모 항목을 넣는다.
+            let _ = this.update(cx, |this, cx| {
+                if let Some(project) = this.current_or_first_project() {
+                    for t in [
+                        "로그인 페이지가 사파리에서 깨져요 - 고객 문의: iOS 17 사파리에서 로그인 버튼이 눌리지 않는다고 합니다.",
+                        "다음 주 배포 전에 의존성 업데이트 - 보안 공지가 두 건 올라왔습니다.",
+                        "결제 영수증 메일 문구 수정",
+                    ] {
+                        this.send(Action::AddMemo {
+                            project: project.clone(),
+                            text: t.into(),
+                        });
+                    }
+                }
+                this.send(Action::LoadIntake);
+                cx.notify();
+            });
+            wait(1500).await;
+            for (i, name) in STEPS.iter().enumerate() {
+                let ok = this
+                    .update_in(cx, |this, window, cx| {
+                        this.modal = None;
+                        let snap = this.snap();
+                        let first = snap
+                            .cards
+                            .iter()
+                            .find(|c| c.path.contains("safari"))
+                            .or(snap.cards.first())
+                            .map(|c| c.path.clone());
+                        match i {
+                            0 => {
+                                this.nav = Nav::Board;
+                                this.board_mode = BoardMode::List;
+                                this.selected_card = None;
+                            }
+                            1 => this.board_mode = BoardMode::Kanban,
+                            2 => {
+                                this.board_mode = BoardMode::List;
+                                if let Some(p) = first {
+                                    this.card_tab = CardTab::Thread;
+                                    this.open_card(p, cx);
+                                }
+                            }
+                            3 => this.card_tab = CardTab::Task,
+                            4 => {
+                                this.card_tab = CardTab::Changes;
+                                if let Some(p) = first {
+                                    this.send(Action::LoadDiff(p));
+                                }
+                            }
+                            5 => {
+                                this.selected_card = None;
+                                this.nav = Nav::Intake;
+                            }
+                            6 => {
+                                this.nav = Nav::Board;
+                                this.board_mode = BoardMode::Kanban;
+                                if let Some(p) = first {
+                                    this.card_tab = CardTab::Thread;
+                                    this.open_card(p, cx);
+                                }
+                            }
+                            7 => {
+                                this.selected_card = None;
+                                this.board_mode = BoardMode::List;
+                                this.nav = Nav::Inbox;
+                            }
+                            8 => this.nav = Nav::Orchestrator,
+                            9 => this.nav = Nav::Agents,
+                            10 => this.nav = Nav::Connectors,
+                            11 => {
+                                this.nav = Nav::Board;
+                                this.open_modal(Modal::NewCard, window, cx);
+                            }
+                            12 => this.open_modal(Modal::NewProject, window, cx),
+                            13 => {
+                                this.nav = Nav::Board;
+                                if let Some(p) = first {
+                                    this.card_tab = CardTab::Thread;
+                                    this.open_card(p, cx);
+                                }
+                                this.composer.update(cx, |c, cx| {
+                                    c.set_text(
+                                        "첫 줄입니다.\n두 번째 줄은 조금 더 길게 써서 칸 너비를 넘기면 자동으로 줄이 바뀌는지 확인합니다. 한글과 English가 섞여도 괜찮은지 봅니다.\n세 번째 줄",
+                                        cx,
+                                    )
+                                });
+                                window.focus(&this.composer.focus_handle(cx));
+                            }
+                            _ => {
+                                window.resize(size(px(980.), px(640.)));
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+                wait(1800).await;
+                let path = dir.join(format!("{name}.png"));
+                // 창 영역만 찍는다(화면 좌표, 포인트).
+                let rect = this
+                    .update_in(cx, |_, window, _| {
+                        let b = window.bounds();
+                        format!(
+                            "{},{},{},{}",
+                            f32::from(b.origin.x) as i32,
+                            f32::from(b.origin.y) as i32,
+                            f32::from(b.size.width) as i32,
+                            f32::from(b.size.height) as i32
+                        )
+                    })
+                    .unwrap_or_default();
+                let mut cmd = std::process::Command::new("screencapture");
+                cmd.args(["-x", "-o"]);
+                if !rect.is_empty() {
+                    cmd.arg(format!("-R{rect}"));
+                }
+                let _ = cmd.arg(&path).status();
+                eprintln!("shot {}", path.display());
+            }
+            let _ = this.update(cx, |_, cx| cx.quit());
+        })
+        .detach();
     }
 
     fn current_or_first_project(&self) -> Option<String> {
@@ -2503,7 +2685,7 @@ impl Workspace {
             .map(|p| snap.card_by_path(p).is_some())
             .unwrap_or(false);
         let left_w = if self.board_mode == BoardMode::List {
-            px(380.)
+            px(320.)
         } else {
             px(0.)
         };
@@ -2620,6 +2802,7 @@ impl Workspace {
                 div()
                     .flex()
                     .flex_row()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .text_xs()
@@ -2762,37 +2945,7 @@ impl Workspace {
                         cx.notify();
                     },
                 ))
-            }))
-            .child(
-                button("open-folder", "폴더", Btn::Subtle).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.send(Action::OpenFolder {
-                            card: Some(c4.clone()),
-                            terminal: false,
-                        });
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("open-term", "터미널", Btn::Subtle).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.send(Action::OpenFolder {
-                            card: Some(c5.clone()),
-                            terminal: true,
-                        });
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button("make-pr", "PR 만들기", Btn::Ghost).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.card_tab = CardTab::Thread;
-                        this.send_from_composer(PR_PROMPT.to_string(), cx);
-                    },
-                )),
-            );
+            }));
         head = head.child(actions_row);
 
         // 탭
@@ -2800,6 +2953,7 @@ impl Workspace {
         let mut tabs = div()
             .flex()
             .flex_row()
+            .items_end()
             .gap_1()
             .px_5()
             .pt_2()
@@ -2815,7 +2969,7 @@ impl Workspace {
             tabs = tabs.child(
                 div()
                     .id(key)
-                    .px_3()
+                    .px_2()
                     .py_2()
                     .text_sm()
                     .text_color(rgb(if active { TEXT } else { MUTED }))
@@ -2835,6 +2989,39 @@ impl Workspace {
                     })),
             );
         }
+
+        // 보조 동작: 탭 줄 오른쪽에 작게 둔다.
+        let tools = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .pb_1()
+            .child(link_btn("open-folder", "폴더").on_click(cx.listener(
+                move |this, _: &ClickEvent, _w, cx| {
+                    this.send(Action::OpenFolder {
+                        card: Some(c4.clone()),
+                        terminal: false,
+                    });
+                    cx.notify();
+                },
+            )))
+            .child(link_btn("open-term", "터미널").on_click(cx.listener(
+                move |this, _: &ClickEvent, _w, cx| {
+                    this.send(Action::OpenFolder {
+                        card: Some(c5.clone()),
+                        terminal: true,
+                    });
+                    cx.notify();
+                },
+            )))
+            .child(link_btn("make-pr", "PR 만들기").on_click(cx.listener(
+                move |this, _: &ClickEvent, _w, cx| {
+                    this.card_tab = CardTab::Thread;
+                    this.send_from_composer(PR_PROMPT.to_string(), cx);
+                },
+            )));
+        tabs = tabs.child(div().flex_1()).child(tools);
 
         let body: AnyElement = match tab {
             CardTab::Thread => {
@@ -2930,7 +3117,11 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_color(rgb(FAINT))
-                    .child("아직 대화가 없습니다."),
+                    .child(if id == "thread" {
+                        "아직 대화가 없습니다. 아래 칸에 할 일을 적어 보내면 워커가 이 카드의 작업 공간에서 일을 시작합니다."
+                    } else {
+                        "아직 대화가 없습니다. 예: \"로그인 버그 카드 만들고 워커 붙여줘\", \"지금 막힌 카드 정리해줘\"처럼 말해 보세요."
+                    }),
             );
         }
         // 도구 호출이 길게 이어지면 묶어서 보인다.
@@ -3512,7 +3703,16 @@ impl Workspace {
                             .child(if a.installed {
                                 format!("{} {}", a.version, a.detail)
                             } else {
-                                "설치되지 않음".to_string()
+                                match a.name.as_str() {
+                                    "claude" => {
+                                        "설치되지 않음 · npm i -g @anthropic-ai/claude-code"
+                                            .to_string()
+                                    }
+                                    "opencode" => {
+                                        "설치되지 않음 · npm i -g opencode-ai".to_string()
+                                    }
+                                    _ => "설치되지 않음".to_string(),
+                                }
                             }),
                     ),
             );
@@ -3546,13 +3746,14 @@ impl Workspace {
                     ))),
             );
         }
-        col = col.child(section_label(format!("도는 인스턴스 {}", snap.instances.len())).px_0());
+        col =
+            col.child(section_label(format!("실행 중인 인스턴스 {}", snap.instances.len())).px_0());
         if snap.instances.is_empty() {
             col = col.child(
                 div()
                     .text_sm()
                     .text_color(rgb(FAINT))
-                    .child("지금 도는 인스턴스가 없습니다."),
+                    .child("지금 실행 중인 인스턴스가 없습니다."),
             );
         }
         for (n, i) in snap.instances.iter().enumerate() {
@@ -3831,11 +4032,11 @@ impl Workspace {
                     .pt_3()
                     .text_xs()
                     .text_color(rgb(match label {
-                        "새로 들어옴" => VIOLET,
-                        "회신 대기" => AMBER,
+                        "new" => VIOLET,
+                        "reply_pending" => AMBER,
                         _ => FAINT,
                     }))
-                    .child(label)
+                    .child(vm::intake_state_label(label))
                     .child(div().text_color(rgb(FAINT)).child(items.len().to_string())),
             );
             for it in items {
