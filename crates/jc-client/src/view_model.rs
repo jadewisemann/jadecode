@@ -528,6 +528,36 @@ pub enum MdBlock {
     Rule,
 }
 
+/// task.md에서 한 줄 목표: "목표" 제목 아래 첫 문단, 없으면 첫 문단이나 첫 항목.
+pub fn goal_summary(md: &str) -> String {
+    let blocks = markdown_blocks(md);
+    let mut after_goal = false;
+    let mut first: Option<String> = None;
+    for b in &blocks {
+        match b {
+            MdBlock::Heading(_, t) => {
+                let t = t.to_lowercase();
+                after_goal = t.contains("목표") || t.contains("goal");
+            }
+            MdBlock::Para(t) | MdBlock::Bullet(_, t) | MdBlock::Check(_, t) => {
+                if after_goal {
+                    return t.clone();
+                }
+                first.get_or_insert_with(|| t.clone());
+            }
+            _ => {}
+        }
+    }
+    first
+        .or_else(|| {
+            blocks.iter().find_map(|b| match b {
+                MdBlock::Heading(_, t) => Some(t.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default()
+}
+
 /// 앞머리(`---` … `---`)를 떼고 블록으로 나눈다.
 pub fn markdown_blocks(md: &str) -> Vec<MdBlock> {
     let mut lines = md.lines().peekable();
@@ -1056,10 +1086,185 @@ pub fn swap_red_blue(svg: &[u8]) -> Vec<u8> {
     out
 }
 
+/// 봇의 지금 상태. 따로 점이나 배지를 달지 않고 아바타의 눈으로 보여 준다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Mood {
+    /// 대화 속 얼굴: 눈을 뜨고 정면을 본다.
+    Talk,
+    /// 쉬는 중: 눈을 감고 있다.
+    Rest,
+    /// 일하는 중: 눈꺼풀을 내리고 아래를 본다.
+    Work,
+    /// 사람을 기다림(승인·질문): 눈썹을 올리고 위를 본다.
+    Wait,
+    /// 막힘·실패: 걱정하는 눈썹.
+    Stuck,
+    /// 끝남: 웃는 눈.
+    Done,
+}
+
+impl Mood {
+    pub fn label(self) -> &'static str {
+        match self {
+            Mood::Talk => "",
+            Mood::Rest => "쉬는 중",
+            Mood::Work => "일하는 중",
+            Mood::Wait => "답을 기다림",
+            Mood::Stuck => "막힘",
+            Mood::Done => "끝남",
+        }
+    }
+}
+
+/// 카드와 그 카드의 봇 인스턴스 상태로 표정을 고른다.
+pub fn mood_of(card_status: &str, needs_you: bool, instance_state: Option<&str>) -> Mood {
+    if needs_you {
+        return Mood::Wait;
+    }
+    match card_status {
+        "blocked" | "failed" => return Mood::Stuck,
+        "done" => return Mood::Done,
+        "waiting_human" => return Mood::Wait,
+        _ => {}
+    }
+    match instance_state {
+        Some("busy" | "starting") => Mood::Work,
+        _ => Mood::Rest,
+    }
+}
+
+/// 봇 아바타 SVG: 둥근 사각형 몸에 눈 두 개, 봇마다 소품 하나.
+/// 세부는 줄이고(작은 크기에서도 읽히게) 눈으로 상태를 보여 준다.
+pub fn bot_svg(key: &str, color: u32, mood: Mood) -> String {
+    const INK: &str = "#141824";
+    let body = format!("#{color:06x}");
+    let mut s = String::from(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 64 64">"##,
+    );
+    // 소품(몸 뒤)
+    match key {
+        "researcher" => s.push_str(&format!(
+            r##"<rect x="30.5" y="3" width="3" height="10" rx="1.5" fill="{INK}"/><circle cx="32" cy="4.5" r="4" fill="#ffe27a"/>"##
+        )),
+        "orchestrator" => s.push_str(
+            r##"<path d="M19 15 L21 3 L27 9 L32 1 L37 9 L43 3 L45 15 Z" fill="#ffd25e"/>"##,
+        ),
+        _ => {}
+    }
+    s.push_str(&format!(
+        r##"<rect x="5" y="11" width="54" height="51" rx="20" fill="{body}"/>"##
+    ));
+    if key == "worker" {
+        s.push_str(r##"<path d="M13 21 Q13 5 32 5 Q51 5 51 21 Z" fill="#ffc83d"/><rect x="9" y="18" width="46" height="5" rx="2.5" fill="#f2a900"/>"##);
+    }
+    // 눈
+    let (lx, rx, ey) = (23.0f32, 41.0f32, 39.0f32);
+    match mood {
+        Mood::Rest => {
+            for x in [lx, rx] {
+                s.push_str(&format!(
+                    r##"<path d="M{} {ey} Q{x} {} {} {ey}" stroke="{INK}" stroke-width="3" fill="none" stroke-linecap="round"/>"##,
+                    x - 6.0,
+                    ey + 4.0,
+                    x + 6.0
+                ));
+            }
+        }
+        Mood::Done => {
+            for x in [lx, rx] {
+                s.push_str(&format!(
+                    r##"<path d="M{} {} Q{x} {} {} {}" stroke="{INK}" stroke-width="3" fill="none" stroke-linecap="round"/>"##,
+                    x - 6.0,
+                    ey + 2.0,
+                    ey - 6.0,
+                    x + 6.0,
+                    ey + 2.0
+                ));
+            }
+        }
+        _ => {
+            let (ry, dx, dy) = match mood {
+                Mood::Wait => (8.5, 0.0, -3.0),
+                Mood::Work => (7.0, 1.5, 2.5),
+                _ => (7.5, 0.0, 0.5),
+            };
+            for x in [lx, rx] {
+                s.push_str(&format!(
+                    r##"<ellipse cx="{x}" cy="{ey}" rx="6.5" ry="{ry}" fill="#ffffff"/><circle cx="{}" cy="{}" r="3.4" fill="{INK}"/>"##,
+                    x + dx,
+                    ey + dy
+                ));
+            }
+            match mood {
+                // 눈꺼풀: 몸 색으로 눈 위쪽을 덮는다
+                Mood::Work => {
+                    for x in [lx, rx] {
+                        s.push_str(&format!(
+                            r##"<rect x="{}" y="{}" width="15" height="6" fill="{body}"/>"##,
+                            x - 7.5,
+                            ey - 9.0
+                        ));
+                    }
+                }
+                Mood::Wait => s.push_str(&format!(
+                    r##"<path d="M17 26 Q23 22 29 26 M35 26 Q41 22 47 26" stroke="{INK}" stroke-width="2.6" fill="none" stroke-linecap="round"/>"##
+                )),
+                Mood::Stuck => s.push_str(&format!(
+                    r##"<path d="M17 29 L28 26 M36 26 L47 29" stroke="{INK}" stroke-width="2.6" fill="none" stroke-linecap="round"/>"##
+                )),
+                _ => {}
+            }
+        }
+    }
+    if key == "reviewer" {
+        s.push_str(&format!(
+            r##"<g fill="none" stroke="{INK}" stroke-width="2.4"><circle cx="{lx}" cy="{ey}" r="9.5"/><circle cx="{rx}" cy="{ey}" r="9.5"/><path d="M32.5 38 L31.5 38"/></g>"##
+        ));
+    }
+    s.push_str("</svg>");
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::board::Instance;
+
+    #[test]
+    fn goal_summary_prefers_goal_section() {
+        let md = "# Safari 버튼\n\n배경 설명입니다.\n\n## 목표\n\n내보내기 버튼이 Safari에서 동작한다.\n";
+        assert_eq!(goal_summary(md), "내보내기 버튼이 Safari에서 동작한다.");
+        assert_eq!(goal_summary("# 제목만\n"), "제목만");
+        assert_eq!(goal_summary("첫 문단\n"), "첫 문단");
+    }
+
+    #[test]
+    fn moods_follow_card_and_instance() {
+        assert_eq!(mood_of("working", false, Some("busy")), Mood::Work);
+        assert_eq!(mood_of("working", true, Some("busy")), Mood::Wait);
+        assert_eq!(mood_of("blocked", false, None), Mood::Stuck);
+        assert_eq!(mood_of("done", false, None), Mood::Done);
+        assert_eq!(mood_of("working", false, Some("idle")), Mood::Rest);
+    }
+
+    #[test]
+    fn bot_svg_is_well_formed_for_every_mood() {
+        for key in ["orchestrator", "worker", "reviewer", "researcher", "custom"] {
+            for m in [
+                Mood::Talk,
+                Mood::Rest,
+                Mood::Work,
+                Mood::Wait,
+                Mood::Stuck,
+                Mood::Done,
+            ] {
+                let s = bot_svg(key, 0x6e98ff, m);
+                assert!(s.starts_with("<svg") && s.ends_with("</svg>"));
+                assert!(s.contains("#6e98ff"));
+                assert!(!s.contains("NaN"));
+            }
+        }
+    }
     use serde_json::json;
 
     fn ev(seq: u64, topic: &str, kind: &str, body: serde_json::Value) -> EventRow {
