@@ -962,20 +962,44 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Btn) -
         .child(label.into())
 }
 
-/// 봇 아바타: 고유 색 동그라미에 글자 하나.
+/// 봇 아바타 그림(SVG, 앱에 넣어 둔다).
+fn bot_image(bot: &str) -> Arc<gpui::Image> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Mutex<HashMap<&'static str, Arc<gpui::Image>>>> = OnceLock::new();
+    let key: &'static str = match bot {
+        "orchestrator" => "orchestrator",
+        "worker" => "worker",
+        "reviewer" => "reviewer",
+        "researcher" => "researcher",
+        _ => "generic",
+    };
+    let bytes: &'static [u8] = match key {
+        "orchestrator" => include_bytes!("../../assets/bots/orchestrator.svg"),
+        "worker" => include_bytes!("../../assets/bots/worker.svg"),
+        "reviewer" => include_bytes!("../../assets/bots/reviewer.svg"),
+        "researcher" => include_bytes!("../../assets/bots/researcher.svg"),
+        _ => include_bytes!("../../assets/bots/generic.svg"),
+    };
+    let cache = CACHE.get_or_init(Default::default);
+    let mut m = cache.lock().unwrap_or_else(|e| e.into_inner());
+    m.entry(key)
+        .or_insert_with(|| {
+            Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Svg,
+                bytes.to_vec(),
+            ))
+        })
+        .clone()
+}
+
+/// 봇 아바타: 봇마다 다른 캐릭터 그림.
 fn avatar(look: &vm::BotLook, size: f32) -> Div {
     div()
-        .flex()
         .flex_none()
-        .items_center()
-        .justify_center()
         .size(px(size))
         .rounded_full()
-        .bg(rgb(look.color))
-        .text_color(rgb(BG))
-        .font_weight(gpui::FontWeight::BOLD)
-        .text_size(px(size * 0.45))
-        .child(look.glyph.clone())
+        .overflow_hidden()
+        .child(gpui::img(bot_image(&look.key)).size(px(size)))
 }
 
 /// `w-01kq…` → `w-01kq` (머리글에 보일 짧은 id).

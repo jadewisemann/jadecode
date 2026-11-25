@@ -754,6 +754,8 @@ pub fn collect_diff(card_dir: &Path, max_lines: usize) -> String {
 /// 봇 하나가 화면에서 어떻게 보이는가.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BotLook {
+    /// 봇 이름 그대로(아바타 그림을 고른다).
+    pub key: String,
     /// 사람이 읽는 이름(워커·리뷰어…).
     pub name: String,
     /// 아바타 글자.
@@ -777,6 +779,7 @@ pub fn bot_look(bot: &str) -> BotLook {
                 .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
             let g: String = other.chars().take(1).collect::<String>().to_uppercase();
             return BotLook {
+                key: other.to_string(),
                 name: other.to_string(),
                 glyph: g,
                 color: PALETTE[(h as usize) % PALETTE.len()],
@@ -784,6 +787,7 @@ pub fn bot_look(bot: &str) -> BotLook {
         }
     };
     BotLook {
+        key: bot.to_string(),
         name: name.into(),
         glyph: glyph.into(),
         color,
