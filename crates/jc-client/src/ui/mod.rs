@@ -3147,6 +3147,7 @@ impl Workspace {
         if !members.is_empty() || self.extra_bots {
             head = head.child(actions_row).children(invite_row);
         }
+        head = head.child(self.goal_block(detail.map(|d| d.markdown.as_str()), cx));
 
         // 탭: 대화 · 변경사항
         let tab = self.card_tab;
@@ -3193,19 +3194,7 @@ impl Workspace {
                 let topic = vm::card_topic(&path);
                 let hist = self.histories.get(&topic).cloned().unwrap_or_default();
                 let events = vm::thread(&hist, &snap.recent, &topic, false);
-                div()
-                    .flex()
-                    .flex_col()
-                    .size_full()
-                    .child(self.goal_block(detail.map(|d| d.markdown.as_str()), cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h(px(0.))
-                            .overflow_hidden()
-                            .child(self.thread_body(&snap, events, "thread", cx)),
-                    )
-                    .into_any_element()
+                self.thread_body(&snap, events, "thread", cx)
             }
             CardTab::Changes => self.diff_body(&path, cx),
         };
@@ -3612,8 +3601,6 @@ impl Workspace {
             .flex()
             .flex_col()
             .flex_none()
-            .mx_4()
-            .mt_3()
             .rounded_md()
             .bg(rgb(PANEL))
             .border_1()
@@ -3652,7 +3639,7 @@ impl Workspace {
         if open {
             d = d.child(
                 div()
-                    .h(px(260.))
+                    .h(px(220.))
                     .border_t_1()
                     .border_color(rgb(LINE))
                     .child(self.markdown_body(md)),
