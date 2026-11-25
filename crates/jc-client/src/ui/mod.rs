@@ -1,14 +1,16 @@
 //! GPUI 화면.
 //!
 //! 구성(왼쪽부터):
-//! 1. 사이드바: 수집함(바깥 사이클) · 확인 요청(승인·질문) · 오케스트레이터 · 보드 · 에이전트 · 연결, 프로젝트 목록
-//! 2. 가운데: 카드 목록(급한 순) 또는 칸반(수집 · 단계 열 · 회신 대기)
-//! 3. 오른쪽: 카드 스레드(에이전트 대화·도구 호출·권한 승인 + 입력), task.md, 변경사항(diff)
+//! 화면은 셋이다: 보드, 카드, 설정.
+//! 1. 사이드바: 프로젝트 목록, 설정
+//! 2. 보드: 칸반 한 장에 바깥 루프(들어온 일 · 오케스트레이터)와 안쪽 루프(단계 열), 돌려줄 일
+//! 3. 오른쪽 칸: 카드 대화방(목표 · 대화 · 변경사항), 들어온 일 하나, 또는 오케스트레이터
 //!
 //! 데이터는 `board::Board`가 갖는다. 쓰기 동작은 **별도 연결**로 백그라운드 스레드에서
 //! 실행한다(GPUI 실행기와 tokio를 섞지 않는다). 결과는 `Outcome`과 이벤트 구독으로 돌아온다.
 
 pub mod input;
+mod prefs;
 pub mod theme;
 
 use crate::board::{
@@ -37,17 +39,14 @@ actions!(
         Quit,
         NewCard,
         NewProject,
-        GoIntake,
-        GoInbox,
         GoOrchestrator,
         GoBoard,
-        GoAgents,
-        GoConnectors,
+        GoSettings,
         OpenLogs,
         ReportIssue,
         CheckUpdate,
         About,
-        ToggleBoardMode,
+        ToggleWaiting,
         CloseModal,
         Refresh,
         FocusComposer,
@@ -56,24 +55,31 @@ actions!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
-    Intake,
-    Inbox,
-    Orchestrator,
     Board,
-    Agents,
-    Connectors,
+    Settings,
+}
+
+/// 보드 오른쪽 칸에 무엇을 여는가.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    None,
+    /// 카드 대화방(`selected_card`).
+    Card,
+    /// 들어온 일 하나(수집함 항목 id).
+    Intake(String),
+    /// 바깥 루프를 맡는 오케스트레이터.
+    Orchestrator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoardMode {
-    List,
-    Kanban,
+pub enum SettingsTab {
+    Connectors,
+    Agents,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardTab {
     Thread,
-    Task,
     Changes,
 }
 
@@ -217,7 +223,16 @@ pub struct Workspace {
     seen_version: u64,
     focus: FocusHandle,
     nav: Nav,
-    board_mode: BoardMode,
+    side: Side,
+    settings_tab: SettingsTab,
+    /// 보드에서 사람을 기다리는 카드만 보기.
+    only_waiting: bool,
+    /// 카드 대화 맨 위 목표(task.md)를 펼쳤는가.
+    task_open: bool,
+    /// 카드 머리의 "…" 메뉴를 열었는가.
+    more_menu: bool,
+    /// 리뷰어·리서처 같은 추가 봇을 쓰는가(설정).
+    extra_bots: bool,
     card_tab: CardTab,
     project: Option<String>,
     selected_card: Option<String>,
@@ -306,13 +321,10 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-n", NewCard, None),
             KeyBinding::new("secondary-shift-n", NewProject, None),
-            KeyBinding::new("secondary-1", GoIntake, None),
-            KeyBinding::new("secondary-2", GoInbox, None),
-            KeyBinding::new("secondary-3", GoOrchestrator, None),
-            KeyBinding::new("secondary-4", GoBoard, None),
-            KeyBinding::new("secondary-5", GoAgents, None),
-            KeyBinding::new("secondary-6", GoConnectors, None),
-            KeyBinding::new("secondary-l", ToggleBoardMode, None),
+            KeyBinding::new("secondary-1", GoBoard, None),
+            KeyBinding::new("secondary-2", GoOrchestrator, None),
+            KeyBinding::new("secondary-,", GoSettings, None),
+            KeyBinding::new("secondary-shift-w", ToggleWaiting, None),
             KeyBinding::new("secondary-r", Refresh, None),
             KeyBinding::new("secondary-k", FocusComposer, None),
             KeyBinding::new("escape", CloseModal, Some("Workspace")),
@@ -357,14 +369,11 @@ pub fn run(workspace: Option<std::path::PathBuf>) -> anyhow::Result<()> {
             Menu {
                 name: "보기".into(),
                 items: vec![
-                    MenuItem::action("수집함", GoIntake),
-                    MenuItem::action("확인 요청", GoInbox),
-                    MenuItem::action("오케스트레이터", GoOrchestrator),
                     MenuItem::action("보드", GoBoard),
-                    MenuItem::action("에이전트", GoAgents),
-                    MenuItem::action("연결", GoConnectors),
+                    MenuItem::action("오케스트레이터", GoOrchestrator),
+                    MenuItem::action("나를 기다리는 일만 보기", ToggleWaiting),
                     MenuItem::separator(),
-                    MenuItem::action("목록/칸반 전환", ToggleBoardMode),
+                    MenuItem::action("설정", GoSettings),
                     MenuItem::action("새로고침", Refresh),
                 ],
             },
@@ -906,6 +915,14 @@ struct DragCard {
     stage: String,
 }
 
+/// 칸반에서 끌고 있는 들어온 일.
+struct DragIntake {
+    id: String,
+    title: String,
+    brief: String,
+    project: String,
+}
+
 /// 끄는 동안 커서를 따라다니는 작은 타일.
 struct DragPreview(String);
 
@@ -962,44 +979,35 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Btn) -
         .child(label.into())
 }
 
-/// 봇 아바타 그림(SVG, 앱에 넣어 둔다).
-fn bot_image(bot: &str) -> Arc<gpui::Image> {
+/// 봇 아바타 그림(표정별 SVG를 만들어 캐시한다).
+fn bot_image(look: &vm::BotLook, mood: vm::Mood) -> Arc<gpui::Image> {
     use std::sync::OnceLock;
-    static CACHE: OnceLock<Mutex<HashMap<&'static str, Arc<gpui::Image>>>> = OnceLock::new();
-    let key: &'static str = match bot {
-        "orchestrator" => "orchestrator",
-        "worker" => "worker",
-        "reviewer" => "reviewer",
-        "researcher" => "researcher",
-        _ => "generic",
-    };
-    let bytes: &'static [u8] = match key {
-        "orchestrator" => include_bytes!("../../assets/bots/orchestrator.svg"),
-        "worker" => include_bytes!("../../assets/bots/worker.svg"),
-        "reviewer" => include_bytes!("../../assets/bots/reviewer.svg"),
-        "researcher" => include_bytes!("../../assets/bots/researcher.svg"),
-        _ => include_bytes!("../../assets/bots/generic.svg"),
-    };
+    type Key = (String, u32, vm::Mood);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Arc<gpui::Image>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     let mut m = cache.lock().unwrap_or_else(|e| e.into_inner());
-    m.entry(key)
+    m.entry((look.key.clone(), look.color, mood))
         .or_insert_with(|| {
+            let svg = vm::bot_svg(&look.key, look.color, mood);
             Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Svg,
-                vm::swap_red_blue(bytes),
+                vm::swap_red_blue(svg.as_bytes()),
             ))
         })
         .clone()
 }
 
-/// 봇 아바타: 봇마다 다른 캐릭터 그림.
+/// 대화 속 봇 얼굴.
 fn avatar(look: &vm::BotLook, size: f32) -> Div {
+    avatar_mood(look, vm::Mood::Talk, size)
+}
+
+/// 상태를 눈으로 보여 주는 봇 얼굴. 따로 점이나 배지를 달지 않는다.
+fn avatar_mood(look: &vm::BotLook, mood: vm::Mood, size: f32) -> Div {
     div()
         .flex_none()
         .size(px(size))
-        .rounded_full()
-        .overflow_hidden()
-        .child(gpui::img(bot_image(&look.key)).size(px(size)))
+        .child(gpui::img(bot_image(look, mood)).size(px(size)))
 }
 
 /// `w-01kq…` → `w-01kq` (머리글에 보일 짧은 id).
@@ -1259,7 +1267,12 @@ impl Workspace {
             seen_version: 0,
             focus: cx.focus_handle(),
             nav: Nav::Board,
-            board_mode: BoardMode::List,
+            side: Side::None,
+            settings_tab: SettingsTab::Connectors,
+            only_waiting: false,
+            task_open: false,
+            more_menu: false,
+            extra_bots: prefs::load_extra_bots(),
             card_tab: CardTab::Thread,
             project: None,
             selected_card: None,
@@ -1401,7 +1414,10 @@ impl Workspace {
                         .filter(|e| e.seq > self.last_intake_seq && e.kind == "intake.received")
                         .count();
                     if fresh > 0 {
-                        notify_desktop("jadecode · 수집함", &format!("새로 들어온 일 {fresh}건"));
+                        notify_desktop(
+                            "jadecode · 들어온 일",
+                            &format!("새로 들어온 일 {fresh}건"),
+                        );
                     }
                 }
                 self.last_intake_seq = newest;
@@ -1432,22 +1448,20 @@ impl Workspace {
             let exec = cx.background_executor().clone();
             let wait = |ms: u64| exec.timer(Duration::from_millis(ms));
             wait(2500).await;
-            const STEPS: [&str; 15] = [
-                "01-board-list",
-                "02-board-kanban",
-                "03-card-thread",
-                "04-card-task",
-                "05-card-changes",
-                "06-intake",
-                "07-kanban-card",
-                "08-inbox",
-                "09-orchestrator",
-                "10-agents",
-                "11-connectors",
-                "12-new-card",
-                "13-new-project",
-                "14-composer-multiline",
-                "15-narrow",
+            const STEPS: [&str; 13] = [
+                "01-board",
+                "02-card-thread",
+                "03-card-goal",
+                "04-card-changes",
+                "05-intake-item",
+                "06-orchestrator",
+                "07-waiting",
+                "08-settings-connectors",
+                "09-settings-agents",
+                "10-new-card",
+                "11-new-project",
+                "12-composer-multiline",
+                "13-narrow",
             ];
             // 수집함에 데모 항목을 넣는다.
             let _ = this.update(cx, |this, cx| {
@@ -1478,59 +1492,59 @@ impl Workspace {
                             .find(|c| c.path.contains("safari"))
                             .or(snap.cards.first())
                             .map(|c| c.path.clone());
+                        let first_intake = this
+                            .intake
+                            .iter()
+                            .find(|i| i.state == "new")
+                            .map(|i| i.id.clone());
                         match i {
                             0 => {
                                 this.nav = Nav::Board;
-                                this.board_mode = BoardMode::List;
+                                this.side = Side::None;
                                 this.selected_card = None;
                             }
-                            1 => this.board_mode = BoardMode::Kanban,
-                            2 => {
-                                this.board_mode = BoardMode::List;
-                                if let Some(p) = first {
+                            1 => {
+                                if let Some(p) = first.clone() {
                                     this.card_tab = CardTab::Thread;
                                     this.open_card(p, cx);
                                 }
                             }
-                            3 => this.card_tab = CardTab::Task,
-                            4 => {
+                            2 => this.task_open = true,
+                            3 => {
+                                this.task_open = false;
                                 this.card_tab = CardTab::Changes;
                                 if let Some(p) = first {
                                     this.send(Action::LoadDiff(p));
                                 }
                             }
-                            5 => {
-                                this.selected_card = None;
-                                this.nav = Nav::Intake;
-                            }
-                            6 => {
-                                this.nav = Nav::Board;
-                                this.board_mode = BoardMode::Kanban;
-                                if let Some(p) = first {
-                                    this.card_tab = CardTab::Thread;
-                                    this.open_card(p, cx);
+                            4 => {
+                                this.card_tab = CardTab::Thread;
+                                if let Some(id) = first_intake {
+                                    this.open_intake(id);
                                 }
                             }
-                            7 => {
-                                this.selected_card = None;
-                                this.board_mode = BoardMode::List;
-                                this.nav = Nav::Inbox;
+                            5 => this.open_orchestrator(window, cx),
+                            6 => {
+                                this.close_side();
+                                this.only_waiting = true;
                             }
-                            8 => this.nav = Nav::Orchestrator,
-                            9 => this.nav = Nav::Agents,
-                            10 => this.nav = Nav::Connectors,
-                            11 => {
+                            7 => {
+                                this.only_waiting = false;
+                                this.nav = Nav::Settings;
+                                this.settings_tab = SettingsTab::Connectors;
+                            }
+                            8 => this.settings_tab = SettingsTab::Agents,
+                            9 => {
                                 this.nav = Nav::Board;
                                 this.open_modal(Modal::NewCard, window, cx);
                             }
-                            12 => this.open_modal(Modal::NewProject, window, cx),
-                            13 => {
-                                this.nav = Nav::Board;
+                            10 => this.open_modal(Modal::NewProject, window, cx),
+                            11 => {
                                 if let Some(p) = first {
                                     this.card_tab = CardTab::Thread;
                                     this.open_card(p, cx);
                                 }
-                                this.bot_menu = true;
+                                this.more_menu = true;
                                 this.composer.update(cx, |c, cx| {
                                     c.set_text(
                                         "첫 줄입니다.\n두 번째 줄은 조금 더 길게 써서 칸 너비를 넘기면 자동으로 줄이 바뀌는지 확인합니다. 한글과 English가 섞여도 괜찮은지 봅니다.\n세 번째 줄",
@@ -1540,7 +1554,7 @@ impl Workspace {
                                 window.focus(&this.composer.focus_handle(cx));
                             }
                             _ => {
-                                this.bot_menu = false;
+                                this.more_menu = false;
                                 window.resize(size(px(980.), px(640.)));
                             }
                         }
@@ -1674,9 +1688,37 @@ impl Workspace {
             self.send(Action::LoadDiff(path.clone()));
         }
         self.selected_card = Some(path);
+        self.side = Side::Card;
+        self.nav = Nav::Board;
+        self.more_menu = false;
         self.last_thread_len = 0;
         self.thread_scroll.scroll_to_bottom();
         cx.notify();
+    }
+
+    /// 들어온 일 하나를 오른쪽 칸에 연다.
+    fn open_intake(&mut self, id: String) {
+        self.nav = Nav::Board;
+        self.selected_card = None;
+        self.side = Side::Intake(id);
+    }
+
+    /// 오케스트레이터(바깥 루프 담당)와의 대화를 오른쪽 칸에 연다.
+    fn open_orchestrator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.nav = Nav::Board;
+        self.selected_card = None;
+        self.side = Side::Orchestrator;
+        let p = self
+            .project
+            .clone()
+            .or_else(|| self.snap().projects.first().map(|p| p.slug.clone()));
+        self.set_project(p, cx);
+        window.focus(&self.orch_input.focus_handle(cx));
+    }
+
+    fn close_side(&mut self) {
+        self.selected_card = None;
+        self.side = Side::None;
     }
 
     fn set_project(&mut self, p: Option<String>, cx: &mut Context<Self>) {
@@ -1923,7 +1965,6 @@ impl Workspace {
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.snap();
-        let inbox_n = vm::inbox(&snap).len();
         let att = vm::attention_map(&snap);
         let att_of = |c: &CardData| att.get(&c.path).copied().unwrap_or(Attention::Idle);
         let connected = self.live.connected.load(Ordering::Relaxed);
@@ -1958,84 +1999,6 @@ impl Workspace {
                         }),
                     )),
             );
-        let intake_n = vm::intake_attention(&self.intake);
-        col = col
-            .child(self.nav_item(
-                "nav-intake",
-                "수집함",
-                self.nav == Nav::Intake,
-                Some((intake_n, VIOLET)),
-                cx,
-                |t, window, cx| {
-                    t.nav = Nav::Intake;
-                    let _ = t.tx.send(Action::LoadIntake);
-                    window.focus(&t.memo_input.focus_handle(cx));
-                },
-            ))
-            .child(self.nav_item(
-                "nav-inbox",
-                "확인 요청",
-                self.nav == Nav::Inbox,
-                Some((inbox_n, AMBER)),
-                cx,
-                |t, _, _| t.nav = Nav::Inbox,
-            ))
-            .child(self.nav_item(
-                "nav-orch",
-                "오케스트레이터",
-                self.nav == Nav::Orchestrator,
-                None,
-                cx,
-                |t, window, cx| {
-                    t.nav = Nav::Orchestrator;
-                    if t.project.is_none() {
-                        let first = t.snap().projects.first().map(|p| p.slug.clone());
-                        t.set_project(first, cx);
-                    } else {
-                        t.set_project(t.project.clone(), cx);
-                    }
-                    window.focus(&t.orch_input.focus_handle(cx));
-                },
-            ))
-            .child(
-                self.nav_item(
-                    "nav-board",
-                    "보드",
-                    self.nav == Nav::Board,
-                    Some((
-                        snap.cards
-                            .iter()
-                            .filter(|c| att_of(c) == Attention::Running)
-                            .count(),
-                        ACCENT,
-                    )),
-                    cx,
-                    |t, _, _| t.nav = Nav::Board,
-                ),
-            )
-            .child(self.nav_item(
-                "nav-agents",
-                "에이전트",
-                self.nav == Nav::Agents,
-                None,
-                cx,
-                |t, _, _| {
-                    t.nav = Nav::Agents;
-                    let _ = t.tx.send(Action::LoadAgents);
-                },
-            ))
-            .child(self.nav_item(
-                "nav-connectors",
-                "연결",
-                self.nav == Nav::Connectors,
-                None,
-                cx,
-                |t, _, _| {
-                    t.nav = Nav::Connectors;
-                    let _ = t.tx.send(Action::LoadConnectors);
-                },
-            ));
-
         col = col.child(
             div()
                 .flex()
@@ -2076,9 +2039,7 @@ impl Workspace {
                 cx,
                 |t, _, cx| {
                     t.set_project(None, cx);
-                    if t.nav != Nav::Orchestrator {
-                        t.nav = Nav::Board;
-                    }
+                    t.nav = Nav::Board;
                 },
             )
             .text_color(rgb(if all_active { TEXT } else { MUTED })),
@@ -2119,9 +2080,7 @@ impl Workspace {
                     .child(div().text_xs().text_color(rgb(FAINT)).child(n.to_string()))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                         this.set_project(Some(slug.clone()), cx);
-                        if this.nav != Nav::Orchestrator {
-                            this.nav = Nav::Board;
-                        }
+                        this.nav = Nav::Board;
                         cx.notify();
                     })),
             );
@@ -2180,6 +2139,21 @@ impl Workspace {
                     ),
             );
         }
+        col = col.child(
+            self.nav_item(
+                "nav-settings",
+                "설정",
+                self.nav == Nav::Settings,
+                None,
+                cx,
+                |t, _, _| {
+                    t.nav = Nav::Settings;
+                    let _ = t.tx.send(Action::LoadConnectors);
+                    let _ = t.tx.send(Action::LoadAgents);
+                },
+            )
+            .mb_2(),
+        );
         // 아래: 연결 상태
         col.child(
             div()
@@ -2255,7 +2229,8 @@ impl Workspace {
                 .unwrap_or_else(|| p.clone()),
             None => "모든 프로젝트".to_string(),
         };
-        let mode = self.board_mode;
+        let waiting = vm::inbox(&snap).len();
+        let on = self.only_waiting;
         div()
             .flex()
             .flex_row()
@@ -2274,229 +2249,64 @@ impl Workspace {
             )
             .child(div().flex_1())
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .p(px(2.))
-                    .gap(px(2.))
-                    .rounded_md()
-                    .bg(rgb(PANEL))
-                    .child(chip("mode-list", "목록", mode == BoardMode::List).on_click(
-                        cx.listener(|this, _: &ClickEvent, _w, cx| {
-                            this.board_mode = BoardMode::List;
-                            cx.notify();
-                        }),
-                    ))
-                    .child(
-                        chip("mode-kanban", "칸반", mode == BoardMode::Kanban).on_click(
-                            cx.listener(|this, _: &ClickEvent, _w, cx| {
-                                this.board_mode = BoardMode::Kanban;
-                                cx.notify();
-                            }),
-                        ),
-                    ),
+                chip(
+                    "only-waiting",
+                    if waiting > 0 {
+                        format!("나를 기다리는 일 {waiting}")
+                    } else {
+                        "나를 기다리는 일".to_string()
+                    },
+                    on,
+                )
+                .when(waiting > 0 && !on, |d| d.text_color(rgb(AMBER)))
+                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                    this.only_waiting = !this.only_waiting;
+                    cx.notify();
+                })),
             )
     }
 
-    fn card_row(
+    /// 카드 하나의 얼굴들: 붙어 있는 봇(없으면 마지막에 말한 봇)과 그 표정.
+    fn card_faces(
         &self,
         snap: &BoardSnapshot,
         c: &CardData,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let selected = self.selected_card.as_deref() == Some(&c.path);
-        let insts = snap.instances_of(&c.path);
-        let perms = vm::pending_permissions_of(snap, &c.path);
-        let now = now_ms();
-        // 대화방 얼굴: 지금 있는 봇, 없으면 마지막으로 말한 봇.
-        let member = insts.iter().find(|i| i.role != "orchestrator");
-        let last_bot = c
-            .last
-            .as_ref()
-            .filter(|l| l.kind != "msg.human")
-            .map(|l| vm::bot_of(l, &Default::default()));
-        let face_bot = member.map(|i| i.bot.clone()).or(last_bot);
-        let busy = member
-            .map(|i| i.state == "busy" || i.state == "starting")
-            .unwrap_or(false);
-        let face = match &face_bot {
-            Some(b) => avatar(&vm::bot_look(b), 34.),
-            None => div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .size(px(34.))
-                .rounded_full()
-                .border_1()
-                .border_color(rgb(LINE))
-                .text_xs()
-                .text_color(rgb(FAINT))
-                .child(
-                    format::stage_label(&c.stage)
-                        .chars()
-                        .take(1)
-                        .collect::<String>(),
-                ),
-        };
-        let face = div()
-            .relative()
-            .flex_none()
-            .child(face)
-            .children(busy.then(|| {
-                div()
-                    .absolute()
-                    .bottom(px(-1.))
-                    .right(px(-1.))
-                    .size(px(11.))
-                    .rounded_full()
-                    .border_2()
-                    .border_color(rgb(if selected { SELECTED } else { BG }))
-                    .bg(rgb(GREEN))
-            }));
-        let (who, preview) = match &c.last {
-            Some(l) => {
-                let (w, t) = vm::chat_preview(l);
-                (Some((w, l.kind.clone(), l.body.clone())), t)
-            }
-            None => (None, "아직 대화가 없습니다".to_string()),
-        };
-        let who_el = who.map(|(w, kind, body)| {
-            let color = if kind == "msg.human" {
-                MUTED
-            } else {
-                vm::bot_look(body["bot"].as_str().or(face_bot.as_deref()).unwrap_or("")).color
-            };
-            div()
-                .flex_none()
-                .text_color(rgb(color))
-                .child(format!("{w}:"))
-        });
-        let needs =
-            perms > 0 || matches!(c.status.as_str(), "blocked" | "waiting_human" | "failed");
-        let path = c.path.clone();
-        let id_key: SharedString = format!("card-{}", c.path).into();
-        div()
-            .id(ElementId::Name(id_key))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .px_4()
-            .py_2()
-            .bg(rgb(if selected { SELECTED } else { BG }))
-            .hover(|s| s.bg(rgb(HOVER)))
-            .cursor_pointer()
-            .child(face)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .flex_1()
-                    .min_w(px(0.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .text_sm()
-                                    .when(needs, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
-                                    .text_color(rgb(TEXT))
-                                    .truncate()
-                                    .child(c.title.clone()),
-                            )
-                            .children(c.last.as_ref().map(|l| {
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(rgb(FAINT))
-                                    .child(format::ago(now, l.ts))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .text_xs()
-                            .text_color(rgb(MUTED))
-                            .children(who_el)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .text_color(rgb(if c.last.is_some() { MUTED } else { FAINT }))
-                                    .child(preview),
-                            )
-                            .children((perms > 0).then(|| badge(perms, AMBER))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_1()
-                            .text_xs()
-                            .text_color(rgb(FAINT))
-                            .child(dot(status_color(&c.status)))
-                            .child(format!("{} · {}", c.project, format::stage_label(&c.stage))),
-                    ),
-            )
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _w, cx| this.open_card(path.clone(), cx)),
-            )
-    }
-
-    fn list_view(&self, cx: &mut Context<Self>) -> AnyElement {
-        let snap = self.snap();
-        let groups = vm::group_cards(&snap, self.project.as_deref());
-        let mut list = div()
-            .id("card-list")
-            .flex()
-            .flex_col()
-            .overflow_y_scroll()
-            .size_full()
-            .pb_4();
-        for (att, cards) in groups {
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .px_4()
-                    .pt_4()
-                    .pb_1()
-                    .text_xs()
-                    .text_color(rgb(match att {
-                        Attention::NeedsYou => AMBER,
-                        Attention::Running => ACCENT,
-                        _ => FAINT,
-                    }))
-                    .child(att.label())
-                    .child(div().text_color(rgb(FAINT)).child(cards.len().to_string())),
-            );
-            for c in &cards {
-                list = list.child(self.card_row(&snap, c, cx));
+        needs: bool,
+    ) -> Vec<(vm::BotLook, vm::Mood)> {
+        let mut v: Vec<(vm::BotLook, vm::Mood)> = snap
+            .instances_of(&c.path)
+            .into_iter()
+            .filter(|i| i.role != "orchestrator")
+            .map(|i| {
+                (
+                    vm::bot_look(&i.bot),
+                    vm::mood_of(&c.status, needs, Some(&i.state)),
+                )
+            })
+            .collect();
+        if v.is_empty() {
+            if let Some(b) = c
+                .last
+                .as_ref()
+                .and_then(|l| l.body["bot"].as_str())
+                .filter(|b| !b.is_empty())
+            {
+                v.push((vm::bot_look(b), vm::mood_of(&c.status, needs, None)));
             }
         }
-        list.into_any_element()
+        v
     }
 
     fn kanban_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let snap = self.snap();
+        let att = vm::attention_map(&snap);
         let stages = vm::ordered_stages(&snap, self.project.as_deref());
         let mut cols = div().flex().flex_row().gap_3().flex_1().min_h(px(0.));
         for (si, stage) in stages.iter().enumerate() {
             let cards: Vec<CardData> = snap
                 .stage_cards(self.project.as_deref(), stage)
                 .into_iter()
+                .filter(|c| !self.only_waiting || att.get(&c.path) == Some(&Attention::NeedsYou))
                 .cloned()
                 .collect();
             let target = stage.clone();
@@ -2506,7 +2316,7 @@ impl Workspace {
                 .flex_col()
                 .flex_none()
                 .gap_2()
-                .w(px(272.))
+                .w(px(264.))
                 .h_full()
                 .p_2()
                 .rounded_lg()
@@ -2514,7 +2324,8 @@ impl Workspace {
                 .border_1()
                 .border_color(rgb(PANEL))
                 .overflow_y_scroll()
-                .drag_over::<DragCard>(|st, _, _, _| st.border_color(rgb(ACCENT)).bg(rgb(0x18203a)))
+                .drag_over::<DragCard>(|st, _, _, _| st.border_color(rgb(ACCENT)))
+                .drag_over::<DragIntake>(|st, _, _, _| st.border_color(rgb(VIOLET)))
                 .on_drop(cx.listener(move |this, d: &DragCard, _w, cx| {
                     if d.stage != target {
                         this.send(Action::MoveStage {
@@ -2522,6 +2333,19 @@ impl Workspace {
                             stage: target.clone(),
                         });
                     }
+                    cx.notify();
+                }))
+                .on_drop(cx.listener(|this, d: &DragIntake, _w, cx| {
+                    // 들어온 일을 안쪽 루프로: 짧은 요약만 담은 카드를 만들고 워커를 붙인다.
+                    this.send(Action::TriageToCard {
+                        id: d.id.clone(),
+                        title: d.title.clone(),
+                        brief: d.brief.clone(),
+                        start: true,
+                        project: d.project.clone(),
+                        agent: this.agent_choice.clone(),
+                    });
+                    this.toast("카드로 만들고 워커를 붙였습니다", false);
                     cx.notify();
                 }))
                 .child(
@@ -2538,8 +2362,8 @@ impl Workspace {
                 );
             for c in cards {
                 let selected = self.selected_card.as_deref() == Some(&c.path);
-                let insts = snap.instances_of(&c.path);
-                let perms = vm::pending_permissions_of(&snap, &c.path);
+                let needs = att.get(&c.path) == Some(&Attention::NeedsYou);
+                let faces = self.card_faces(&snap, &c, needs);
                 let path = c.path.clone();
                 let key: SharedString = format!("tile-{}", c.path).into();
                 let drag = DragCard {
@@ -2547,6 +2371,26 @@ impl Workspace {
                     title: c.title.clone(),
                     stage: c.stage.clone(),
                 };
+                let mood = faces.first().map(|f| f.1);
+                let mut foot = div().flex().flex_row().items_center().gap_1().text_xs();
+                for (look, m) in &faces {
+                    foot = foot.child(avatar_mood(look, *m, 20.));
+                }
+                if let Some(m) = mood.filter(|m| matches!(m, vm::Mood::Wait | vm::Mood::Stuck)) {
+                    foot = foot.child(
+                        div()
+                            .pl_1()
+                            .text_color(rgb(if m == vm::Mood::Wait { AMBER } else { RED }))
+                            .child(m.label()),
+                    );
+                }
+                foot = foot
+                    .child(div().flex_1())
+                    .children(c.last.as_ref().map(|l| {
+                        div()
+                            .text_color(rgb(FAINT))
+                            .child(format::ago(now_ms(), l.ts))
+                    }));
                 col = col.child(
                     div()
                         .id(ElementId::Name(key))
@@ -2556,28 +2400,27 @@ impl Workspace {
                         })
                         .flex()
                         .flex_col()
-                        .gap_1()
-                        .p_2()
+                        .gap(px(6.))
+                        .p(px(10.))
                         .rounded_md()
                         .bg(rgb(if selected { SELECTED } else { RAISED }))
                         .border_1()
-                        .border_color(rgb(if selected { ACCENT } else { LINE }))
+                        .border_color(rgb(if selected {
+                            ACCENT
+                        } else if needs {
+                            AMBER
+                        } else {
+                            LINE
+                        }))
                         .hover(|s| s.bg(rgb(HOVER)))
                         .cursor_pointer()
                         .child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_2()
-                                .text_xs()
-                                .text_color(rgb(status_color(&c.status)))
-                                .child(dot(status_color(&c.status)))
-                                .child(format::status_label(&c.status))
-                                .child(div().flex_1())
-                                .children((perms > 0).then(|| badge(perms, AMBER))),
+                                .text_sm()
+                                .text_color(rgb(TEXT))
+                                .when(needs, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+                                .child(c.title.clone()),
                         )
-                        .child(div().text_sm().text_color(rgb(TEXT)).child(c.title.clone()))
                         .children(c.last.as_ref().map(|l| {
                             let (w, t) = vm::chat_preview(l);
                             div()
@@ -2586,20 +2429,7 @@ impl Workspace {
                                 .line_clamp(2)
                                 .child(format!("{w}: {t}"))
                         }))
-                        .child({
-                            // 참여 봇 얼굴 + 프로젝트
-                            let mut r = div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_1()
-                                .text_xs()
-                                .text_color(rgb(FAINT));
-                            for i in insts.iter().filter(|i| i.role != "orchestrator") {
-                                r = r.child(avatar(&vm::bot_look(&i.bot), 18.));
-                            }
-                            r.child(div().pl_1().child(c.project.clone()))
-                        })
+                        .child(foot)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                             this.open_card(path.clone(), cx)
                         })),
@@ -2636,66 +2466,129 @@ impl Workspace {
             .overflow_x_scroll()
             .child(zone(
                 "zone-in",
-                "바깥 사이클 · 들어온 일",
+                "바깥 루프 · 들어온 일",
                 VIOLET,
-                self.intake_column("kc-new", "수집", VIOLET, pick("new"), cx),
+                self.intake_column("kc-new", true, pick("new"), cx),
             ))
             .child(zone(
                 "zone-code",
-                "안쪽 사이클 · 코드",
+                "안쪽 루프 · 코드",
                 ACCENT,
                 cols.into_any_element(),
             ))
             .child(zone(
                 "zone-out",
-                "바깥 사이클 · 돌려줄 일",
+                "바깥 루프 · 돌려줄 일",
                 AMBER,
-                self.intake_column("kc-reply", "회신 대기", AMBER, pick("reply_pending"), cx),
+                self.intake_column("kc-reply", false, pick("reply_pending"), cx),
             ))
             .into_any_element()
     }
 
-    /// 칸반 바깥 사이클 열: 수집함 항목 타일. 누르면 수집함으로 간다.
+    /// 칸반 바깥 루프 열. 들어온 일 열은 위에 오케스트레이터와 메모 칸을 둔다.
+    /// 타일을 누르면 오른쪽에 열리고, 안쪽 루프 열로 끌어 놓으면 카드가 된다.
     fn intake_column(
         &self,
         id: &'static str,
-        label: &'static str,
-        color: u32,
+        incoming: bool,
         items: Vec<IntakeItem>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let color = if incoming { VIOLET } else { AMBER };
+        let snap = self.snap();
         let mut col = div()
             .id(id)
             .flex()
             .flex_col()
             .flex_1()
             .gap_2()
-            .w(px(232.))
+            .w(px(240.))
             .p_2()
             .rounded_lg()
             .bg(rgb(PANEL))
             .border_1()
             .border_color(rgb(LINE))
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .px_1()
-                    .pb_1()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child(label)
-                    .child(items.len().to_string()),
-            );
+            .overflow_y_scroll();
+        if incoming {
+            let orch = snap
+                .instances
+                .iter()
+                .find(|i| {
+                    i.role == "orchestrator"
+                        && self.project.as_deref().is_none_or(|p| i.project == p)
+                })
+                .map(|i| i.state.clone());
+            let mood = vm::mood_of("", false, orch.as_deref());
+            let open = self.side == Side::Orchestrator;
+            col = col
+                .child(
+                    div()
+                        .id("orch-open")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .p(px(6.))
+                        .rounded_md()
+                        .bg(rgb(if open { SELECTED } else { RAISED }))
+                        .hover(|s| s.bg(rgb(HOVER)))
+                        .cursor_pointer()
+                        .child(avatar_mood(&vm::bot_look("orchestrator"), mood, 26.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .min_w(px(0.))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(rgb(TEXT))
+                                        .child("오케스트레이터"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(FAINT))
+                                        .truncate()
+                                        .child("들어온 일을 나눠 카드로 만듭니다"),
+                                ),
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.open_orchestrator(window, cx);
+                            cx.notify();
+                        })),
+                )
+                .child(self.memo_input.clone());
+        }
+        col = col.child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .px_1()
+                .pt_1()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(if incoming {
+                    "새로 들어옴"
+                } else {
+                    "회신 대기"
+                })
+                .child(items.len().to_string()),
+        );
         if items.is_empty() {
             col = col.child(
                 div()
                     .px_1()
                     .text_xs()
                     .text_color(rgb(FAINT))
-                    .child("비어 있음"),
+                    .child(if !incoming {
+                        "끝난 카드의 회신이 여기에 옵니다."
+                    } else if self.connectors.is_empty() {
+                        "위 칸에 메모를 적거나, 설정에서 Slack을 연결하세요."
+                    } else {
+                        "새로 들어온 일이 없습니다."
+                    }),
             );
         }
         for (i, it) in items.iter().enumerate() {
@@ -2704,18 +2597,31 @@ impl Workspace {
             } else {
                 it.connector.clone()
             };
-            let card = it.card.clone();
+            let iid = it.id.clone();
+            let open = self.side == Side::Intake(it.id.clone());
+            let drag = DragIntake {
+                id: it.id.clone(),
+                title: it.title.clone(),
+                brief: vm::default_brief(&it.body, &it.title),
+                project: it.project.clone(),
+            };
             col = col.child(
                 div()
                     .id((id, i))
+                    .when(incoming, |d| {
+                        d.on_drag(drag, |d, _offset, _w, cx| {
+                            let t = d.title.clone();
+                            cx.new(|_| DragPreview(t))
+                        })
+                    })
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .p_2()
+                    .p(px(10.))
                     .rounded_md()
-                    .bg(rgb(RAISED))
-                    .border_l_2()
-                    .border_color(rgb(color))
+                    .bg(rgb(if open { SELECTED } else { RAISED }))
+                    .border_1()
+                    .border_color(rgb(if open { color } else { LINE }))
                     .hover(|s| s.bg(rgb(HOVER)))
                     .cursor_pointer()
                     .child(div().text_xs().text_color(rgb(FAINT)).truncate().child(
@@ -2729,21 +2635,88 @@ impl Workspace {
                         div()
                             .text_sm()
                             .text_color(rgb(TEXT))
+                            .line_clamp(2)
                             .child(it.title.clone()),
                     )
-                    .on_click(
-                        cx.listener(move |this, _: &ClickEvent, _w, cx| match &card {
-                            // 회신 대기 항목은 끝난 카드를 먼저 보여 준다.
-                            Some(c) => this.open_card(c.clone(), cx),
-                            None => {
-                                this.nav = Nav::Intake;
-                                cx.notify();
-                            }
-                        }),
-                    ),
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.open_intake(iid.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        if incoming {
+            col = col.child(
+                div()
+                    .id("ik-sync")
+                    .px_1()
+                    .pt_1()
+                    .text_xs()
+                    .text_color(rgb(FAINT))
+                    .hover(|s| s.text_color(rgb(TEXT)))
+                    .cursor_pointer()
+                    .child("지금 동기화")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.send(Action::SyncConnectors(None));
+                        this.send(Action::LoadIntake);
+                        this.toast("연결된 출처를 동기화하는 중…", false);
+                        cx.notify();
+                    })),
             );
         }
         col.into_any_element()
+    }
+
+    /// 오른쪽 칸: 들어온 일 하나.
+    fn intake_pane(&self, id: &str, cx: &mut Context<Self>) -> AnyElement {
+        let Some(it) = self.intake.iter().find(|i| i.id == id).cloned() else {
+            return empty_state("항목이 없습니다", "이미 처리했거나 보관한 일입니다.")
+                .into_any_element();
+        };
+        let reply = it.state == "reply_pending";
+        div()
+            .id("intake-pane")
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(if reply { AMBER } else { VIOLET }))
+                            .child(if reply { "돌려줄 일" } else { "들어온 일" }),
+                    )
+                    .child(div().flex_1())
+                    .child(self.close_btn(cx)),
+            )
+            .child(self.intake_row(0, &it, cx))
+            .children((it.state == "new").then(|| {
+                div().text_xs().text_color(rgb(FAINT)).child(
+                    "카드로 만들면 원문 대신 짧은 요약만 워커에게 넘어갑니다. 타일을 안쪽 루프 열로 끌어 놓아도 됩니다.",
+                )
+            }))
+            .into_any_element()
+    }
+
+    fn close_btn(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id("side-close")
+            .px_2()
+            .rounded_md()
+            .text_color(rgb(FAINT))
+            .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+            .cursor_pointer()
+            .child("✕")
+            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.close_side();
+                cx.notify();
+            }))
     }
 
     fn welcome(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2768,7 +2741,7 @@ impl Workspace {
                     .border_color(rgb(LINE))
                     .child(div().text_lg().text_color(rgb(TEXT)).child("jadecode에 오신 것을 환영합니다"))
                     .child(div().text_sm().text_color(rgb(MUTED)).child(
-                        "일은 카드 단위로 진행됩니다. 카드를 만들면 에이전트가 그 카드 전용 작업 공간에서 일하고, 승인이나 답이 필요할 때만 \"확인 요청\"으로 돌아옵니다. 메신저·메모로 들어온 일은 \"수집함\"에 모입니다.",
+                        "메신저와 메모로 들어온 일(바깥 루프)을 카드로 만들면, 워커가 그 카드 전용 작업 공간에서 코드를 고칩니다(안쪽 루프). 두 루프는 보드 한 장에서 이어집니다.",
                     ))
                     .child(div().text_sm().text_color(rgb(TEXT)).pt_2().child("1. 프로젝트 이름"))
                     .child(self.project_name.clone())
@@ -2816,7 +2789,11 @@ impl Workspace {
                 .map(|p| c.project == p)
                 .unwrap_or(true)
         });
-        let body: AnyElement = if !has_cards {
+        let has_intake = self
+            .intake
+            .iter()
+            .any(|i| self.project.as_deref().is_none_or(|p| i.project == p));
+        let body: AnyElement = if !has_cards && !has_intake {
             div()
                 .flex()
                 .flex_col()
@@ -2824,13 +2801,10 @@ impl Workspace {
                 .justify_center()
                 .gap_3()
                 .size_full()
-                .child(div().text_color(rgb(TEXT)).child("카드가 없습니다"))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(MUTED))
-                        .child("새 카드를 만들거나 오케스트레이터에게 할 일을 말하세요."),
-                )
+                .child(div().text_color(rgb(TEXT)).child("아직 일이 없습니다"))
+                .child(div().text_sm().text_color(rgb(MUTED)).child(
+                    "메모나 Slack으로 들어온 일은 왼쪽 열에 쌓이고, 카드가 되면 안쪽 루프로 넘어갑니다.",
+                ))
                 .child(
                     div()
                         .flex()
@@ -2844,8 +2818,7 @@ impl Workspace {
                         .child(
                             button("empty-orch", "오케스트레이터에게 말하기", Btn::Ghost).on_click(
                                 cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.nav = Nav::Orchestrator;
-                                    window.focus(&this.orch_input.focus_handle(cx));
+                                    this.open_orchestrator(window, cx);
                                     cx.notify();
                                 }),
                             ),
@@ -2853,72 +2826,46 @@ impl Workspace {
                 )
                 .into_any_element()
         } else {
-            match self.board_mode {
-                BoardMode::List => self.list_view(cx),
-                BoardMode::Kanban => self.kanban_view(cx),
-            }
+            self.kanban_view(cx)
         };
-        let show_card = self
-            .selected_card
-            .as_ref()
-            .map(|p| snap.card_by_path(p).is_some())
-            .unwrap_or(false);
-        let left_w = if self.board_mode == BoardMode::List {
-            px(320.)
-        } else {
-            px(0.)
-        };
-        let mut row = div().flex().flex_row().flex_1().min_h(px(0.));
-        if show_card {
-            if self.board_mode == BoardMode::List {
-                row = row
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_none()
-                            .w(left_w)
-                            .h_full()
-                            .border_r_1()
-                            .border_color(rgb(LINE))
-                            .child(self.board_toolbar(cx))
-                            .child(div().flex_1().min_h(px(0.)).child(body)),
-                    )
-                    .child(self.card_pane(cx));
-            } else {
-                row = row
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h_full()
-                            .child(self.board_toolbar(cx))
-                            .child(div().flex_1().min_h(px(0.)).child(body)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(560.))
-                            .h_full()
-                            .border_l_1()
-                            .border_color(rgb(LINE))
-                            .child(self.card_pane(cx)),
-                    );
+        let side: Option<AnyElement> = match &self.side {
+            Side::Card
+                if self
+                    .selected_card
+                    .as_ref()
+                    .is_some_and(|p| snap.card_by_path(p).is_some()) =>
+            {
+                Some(self.card_pane(cx))
             }
-        } else {
-            row = row.child(
+            Side::Intake(id) => Some(self.intake_pane(id, cx)),
+            Side::Orchestrator => Some(self.orchestrator_page(cx)),
+            _ => None,
+        };
+        div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_h(px(0.))
+            .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_w(px(0.))
                     .h_full()
                     .child(self.board_toolbar(cx))
                     .child(div().flex_1().min_h(px(0.)).child(body)),
-            );
-        }
-        row.into_any_element()
+            )
+            .children(side.map(|p| {
+                div()
+                    .flex_none()
+                    .w(px(560.))
+                    .h_full()
+                    .border_l_1()
+                    .border_color(rgb(LINE))
+                    .child(p)
+            }))
+            .into_any_element()
     }
 
     // ---------- 카드 스레드 ----------
@@ -2932,13 +2879,10 @@ impl Workspace {
             return empty_state("카드를 찾을 수 없습니다", &path).into_any_element();
         };
         let detail = self.details.get(&path);
-        let stages: Vec<String> = detail
-            .map(|d| d.stages.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| vm::DEFAULT_STAGES.iter().map(|s| s.to_string()).collect());
-        let cur = stages.iter().position(|s| s == &card.stage);
+        let needs = vm::attention_map(&snap).get(&path) == Some(&Attention::NeedsYou);
 
-        // 머리
+        // 머리: 제목, 프로젝트·단계, "…" 메뉴
+        let c2 = path.clone();
         let mut head = div()
             .flex()
             .flex_col()
@@ -2953,7 +2897,7 @@ impl Workspace {
                     .flex()
                     .flex_row()
                     .items_start()
-                    .gap_2()
+                    .gap_1()
                     .child(
                         div()
                             .flex_1()
@@ -2963,93 +2907,110 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .id("close-card")
+                            .id("card-more")
                             .px_2()
                             .rounded_md()
-                            .text_color(rgb(FAINT))
+                            .text_color(rgb(if self.more_menu { TEXT } else { FAINT }))
+                            .bg(rgb(if self.more_menu { HOVER } else { BG }))
                             .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
                             .cursor_pointer()
-                            .child("✕")
+                            .child("…")
                             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                                this.selected_card = None;
+                                this.more_menu = !this.more_menu;
                                 cx.notify();
                             })),
-                    ),
+                    )
+                    .child(self.close_btn(cx)),
             )
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .text_xs()
                     .text_color(rgb(MUTED))
-                    .child(dot(status_color(&card.status)))
-                    .child(format::status_label(&card.status))
-                    .child("·")
                     .child(card.project.clone())
-                    .children(
-                        detail
-                            .map(|d| d.repos.clone())
-                            .unwrap_or_default()
-                            .into_iter()
-                            .flat_map(|r| {
-                                [
-                                    div().child("·"),
-                                    div().font_family(MONO).text_color(rgb(TEXT)).child(r),
-                                ]
-                            }),
-                    ),
+                    .child("·")
+                    .child(format::stage_label(&card.stage))
+                    .children((card.status != "done").then(|| {
+                        div()
+                            .id("advance")
+                            .text_color(rgb(FAINT))
+                            .hover(|s| s.text_color(rgb(TEXT)))
+                            .cursor_pointer()
+                            .child("다음 단계 ›")
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                this.send(Action::Advance(c2.clone()));
+                                cx.notify();
+                            }))
+                    })),
             );
 
-        // 단계 진행
-        let mut prog = div().flex().flex_row().flex_wrap().items_center().gap_1();
-        for (i, st) in stages.iter().enumerate() {
-            let (bg, fg) = match cur {
-                Some(c) if i < c => (0x1c3a2c, GREEN),
-                Some(c) if i == c => (ACCENT, WHITE),
-                _ => (PANEL, FAINT),
-            };
-            prog = prog.child(
+        if self.more_menu {
+            let (c3, c4, c5) = (path.clone(), path.clone(), path.clone());
+            head = head.child(
                 div()
-                    .px_2()
-                    .py(px(2.))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .p_1()
                     .rounded_md()
-                    .text_xs()
-                    .bg(rgb(bg))
-                    .text_color(rgb(fg))
-                    .child(format::stage_label(st)),
+                    .bg(rgb(PANEL))
+                    .child(link_btn("open-folder", "폴더 열기").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _w, cx| {
+                            this.more_menu = false;
+                            this.send(Action::OpenFolder {
+                                card: Some(c4.clone()),
+                                terminal: false,
+                            });
+                            cx.notify();
+                        },
+                    )))
+                    .child(link_btn("open-term", "터미널").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _w, cx| {
+                            this.more_menu = false;
+                            this.send(Action::OpenFolder {
+                                card: Some(c5.clone()),
+                                terminal: true,
+                            });
+                            cx.notify();
+                        },
+                    )))
+                    .child(link_btn("make-pr", "PR 만들기").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _w, cx| {
+                            this.more_menu = false;
+                            this.card_tab = CardTab::Thread;
+                            this.send_from_composer(PR_PROMPT.to_string(), cx);
+                        },
+                    )))
+                    .children((card.status != "done").then(|| {
+                        link_btn("mark-done", "끝내기").on_click(cx.listener(
+                            move |this, _: &ClickEvent, _w, cx| {
+                                this.more_menu = false;
+                                this.send(Action::SetStatus {
+                                    card: c3.clone(),
+                                    status: "done".into(),
+                                });
+                                cx.notify();
+                            },
+                        ))
+                    })),
             );
-            if i + 1 < stages.len() {
-                prog = prog.child(div().text_xs().text_color(rgb(LINE)).child("›"));
-            }
         }
-        head = head.child(prog);
 
-        // 대화에 참여한 봇
+        // 대화에 참여한 봇: 얼굴과 이름만. 상태는 얼굴의 눈이 보여 준다.
         let project = card.project.clone();
         let members = vm::card_members(&self.card_events(&path), &snap.instances, &path);
         let (target_bot, _) = self.talk_target(&path);
         let mut actions_row = div().flex().flex_row().flex_wrap().items_center().gap_2();
-        if members.is_empty() {
-            actions_row = actions_row.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child(avatar(&vm::bot_look("worker"), 22.).opacity(0.45))
-                    .child("아직 대화에 봇이 없습니다. 말을 보내면 워커가 들어옵니다."),
-            );
-        }
         for (ii, (bot, live)) in members.iter().enumerate() {
             let look = vm::bot_look(bot);
             let on = &target_bot == bot;
             let pick = bot.clone();
-            let state = live.as_ref().map(|i| i.state.clone());
+            let mood = vm::mood_of(&card.status, needs, live.as_ref().map(|i| i.state.as_str()));
             let stop = live.as_ref().map(|i| i.id.clone());
             actions_row = actions_row.child(
                 div()
@@ -3060,29 +3021,26 @@ impl Workspace {
                     .gap_2()
                     .pl_1()
                     .pr_2()
-                    .py_1()
+                    .py(px(3.))
                     .rounded_full()
-                    .bg(rgb(if on { SELECTED } else { PANEL }))
+                    .bg(rgb(if on { SELECTED } else { BG }))
                     .border_1()
-                    .border_color(rgb(if on { look.color } else { PANEL }))
+                    .border_color(rgb(if on { look.color } else { LINE }))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(HOVER)))
-                    .child(avatar(&look, 22.).when(live.is_none(), |d| d.opacity(0.6)))
+                    .child(avatar_mood(&look, mood, 24.))
                     .child(
                         div()
                             .text_xs()
                             .text_color(rgb(TEXT))
                             .child(look.name.clone()),
                     )
-                    .child(dot(state.as_deref().map(instance_color).unwrap_or(FAINT)))
-                    .child(div().text_xs().text_color(rgb(FAINT)).child(
-                        match (state.as_deref(), live) {
-                            (Some("busy"), _) => "작업 중".to_string(),
-                            (Some("starting"), _) => "준비 중".to_string(),
-                            (Some(_), Some(i)) => format!("대기 · {}턴", i.turns),
-                            _ => "쉬는 중".to_string(),
-                        },
-                    ))
+                    .children(matches!(mood, vm::Mood::Wait | vm::Mood::Stuck).then(|| {
+                        div()
+                            .text_xs()
+                            .text_color(rgb(if mood == vm::Mood::Wait { AMBER } else { RED }))
+                            .child(mood.label())
+                    }))
                     .children(stop.map(|stop| {
                         div()
                             .id(("member-stop", ii))
@@ -3104,30 +3062,32 @@ impl Workspace {
                     })),
             );
         }
-        actions_row = actions_row.child(
-            div()
-                .id("invite-bot")
-                .px_3()
-                .py_1()
-                .rounded_full()
-                .border_1()
-                .border_color(rgb(LINE))
-                .text_xs()
-                .text_color(rgb(MUTED))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
-                .child(if self.bot_menu {
-                    "닫기"
-                } else {
-                    "+ 봇 부르기"
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                    this.bot_menu = !this.bot_menu;
-                    cx.notify();
-                })),
-        );
+        if self.extra_bots {
+            actions_row = actions_row.child(
+                div()
+                    .id("invite-bot")
+                    .px_3()
+                    .py_1()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+                    .child(if self.bot_menu {
+                        "닫기"
+                    } else {
+                        "+ 봇 부르기"
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.bot_menu = !this.bot_menu;
+                        cx.notify();
+                    })),
+            );
+        }
         let mut invite_row: Option<Div> = None;
-        if self.bot_menu {
+        if self.extra_bots && self.bot_menu {
             let mut r = div()
                 .flex()
                 .flex_row()
@@ -3137,13 +3097,7 @@ impl Workspace {
                 .px_3()
                 .py_2()
                 .rounded_lg()
-                .bg(rgb(PANEL))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(FAINT))
-                        .child("이 대화에 부를 봇"),
-                );
+                .bg(rgb(PANEL));
             let mut names: Vec<String> = self
                 .bots
                 .iter()
@@ -3185,53 +3139,13 @@ impl Workspace {
                         })),
                 );
             }
-            // 어떤 에이전트로 돌릴지
-            for (ai, a) in self.agents.iter().filter(|a| a.installed).enumerate() {
-                let name = a.name.clone();
-                let on = self.agent_choice.as_deref() == Some(&a.name);
-                r = r.child(
-                    chip(("agent-pick", ai), format::agent_label(&a.name), on).on_click(
-                        cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.agent_choice = if this.agent_choice.as_deref() == Some(&name) {
-                                None
-                            } else {
-                                Some(name.clone())
-                            };
-                            cx.notify();
-                        }),
-                    ),
-                );
-            }
             invite_row = Some(r);
         }
-        let c2 = path.clone();
-        let c3 = path.clone();
-        let c4 = path.clone();
-        let c5 = path.clone();
-        actions_row = actions_row
-            .child(div().flex_1())
-            .child(
-                button("advance", "다음 단계", Btn::Ghost).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.send(Action::Advance(c2.clone()));
-                        cx.notify();
-                    },
-                )),
-            )
-            .children((card.status != "done").then(|| {
-                button("mark-done", "끝내기", Btn::Ok).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _w, cx| {
-                        this.send(Action::SetStatus {
-                            card: c3.clone(),
-                            status: "done".into(),
-                        });
-                        cx.notify();
-                    },
-                ))
-            }));
-        head = head.child(actions_row).children(invite_row);
+        if !members.is_empty() || self.extra_bots {
+            head = head.child(actions_row).children(invite_row);
+        }
 
-        // 탭
+        // 탭: 대화 · 변경사항
         let tab = self.card_tab;
         let mut tabs = div()
             .flex()
@@ -3239,12 +3153,11 @@ impl Workspace {
             .items_end()
             .gap_1()
             .px_5()
-            .pt_2()
+            .pt_1()
             .border_b_1()
             .border_color(rgb(LINE));
         for (t, label, key) in [
             (CardTab::Thread, "대화", "tab-thread"),
-            (CardTab::Task, "task.md", "tab-task"),
             (CardTab::Changes, "변경사항", "tab-changes"),
         ] {
             let active = tab == t;
@@ -3265,7 +3178,6 @@ impl Workspace {
                         this.card_tab = t;
                         match t {
                             CardTab::Changes => this.send(Action::LoadDiff(p.clone())),
-                            CardTab::Task => this.send(Action::LoadCard(p.clone())),
                             CardTab::Thread => this.thread_scroll.scroll_to_bottom(),
                         }
                         cx.notify();
@@ -3273,47 +3185,24 @@ impl Workspace {
             );
         }
 
-        // 보조 동작: 탭 줄 오른쪽에 작게 둔다.
-        let tools = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .pb_1()
-            .child(link_btn("open-folder", "폴더").on_click(cx.listener(
-                move |this, _: &ClickEvent, _w, cx| {
-                    this.send(Action::OpenFolder {
-                        card: Some(c4.clone()),
-                        terminal: false,
-                    });
-                    cx.notify();
-                },
-            )))
-            .child(link_btn("open-term", "터미널").on_click(cx.listener(
-                move |this, _: &ClickEvent, _w, cx| {
-                    this.send(Action::OpenFolder {
-                        card: Some(c5.clone()),
-                        terminal: true,
-                    });
-                    cx.notify();
-                },
-            )))
-            .child(link_btn("make-pr", "PR 만들기").on_click(cx.listener(
-                move |this, _: &ClickEvent, _w, cx| {
-                    this.card_tab = CardTab::Thread;
-                    this.send_from_composer(PR_PROMPT.to_string(), cx);
-                },
-            )));
-        tabs = tabs.child(div().flex_1()).child(tools);
-
         let body: AnyElement = match tab {
             CardTab::Thread => {
                 let topic = vm::card_topic(&path);
                 let hist = self.histories.get(&topic).cloned().unwrap_or_default();
                 let events = vm::thread(&hist, &snap.recent, &topic, false);
-                self.thread_body(&snap, events, "thread", cx)
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .child(self.goal_block(detail.map(|d| d.markdown.as_str()), cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .child(self.thread_body(&snap, events, "thread", cx)),
+                    )
+                    .into_any_element()
             }
-            CardTab::Task => self.markdown_body(detail.map(|d| d.markdown.as_str())),
             CardTab::Changes => self.diff_body(&path, cx),
         };
 
@@ -3674,7 +3563,7 @@ impl Workspace {
                 }
             };
         }
-        // 일하는 봇이 있으면 "입력 중"을 보인다.
+        // 일하는 봇은 따로 점을 찍지 않고, 일하는 얼굴로 보인다.
         let card = self.selected_card.as_deref().filter(|_| id == "thread");
         let busy: Vec<&crate::board::Instance> = snap
             .instances
@@ -3693,28 +3582,79 @@ impl Workspace {
                     .flex_row()
                     .items_center()
                     .gap_3()
-                    .child(avatar(&look, 32.))
-                    .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .rounded_lg()
-                            .bg(rgb(RAISED))
-                            .text_sm()
-                            .text_color(rgb(MUTED))
-                            .child(format!(
-                                "{} {}",
-                                look.name,
-                                if i.state == "starting" {
-                                    "준비 중 …"
-                                } else {
-                                    "작업 중 •••"
-                                }
-                            )),
-                    ),
+                    .child(avatar_mood(&look, vm::Mood::Work, 32.))
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(format!(
+                        "{}가 {}",
+                        look.name,
+                        if i.state == "starting" {
+                            "들어오는 중입니다"
+                        } else {
+                            "일하는 중입니다"
+                        }
+                    ))),
             );
         }
         col.into_any_element()
+    }
+
+    /// 카드 목표(task.md)를 대화 맨 위에 접어 둔다. 누르면 펼친다.
+    fn goal_block(&self, md: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
+        let summary = md
+            .map(vm::goal_summary)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "목표를 불러오는 중…".to_string());
+        let open = self.task_open;
+        let mut d = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .mx_4()
+            .mt_3()
+            .rounded_md()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(LINE))
+            .child(
+                div()
+                    .id("goal-toggle")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(if open {
+                        "▾"
+                    } else {
+                        "▸"
+                    }))
+                    .child(div().text_xs().text_color(rgb(MUTED)).child("목표"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_sm()
+                            .text_color(rgb(TEXT))
+                            .truncate()
+                            .child(summary),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.task_open = !this.task_open;
+                        cx.notify();
+                    })),
+            );
+        if open {
+            d = d.child(
+                div()
+                    .h(px(260.))
+                    .border_t_1()
+                    .border_color(rgb(LINE))
+                    .child(self.markdown_body(md)),
+            );
+        }
+        d.into_any_element()
     }
 
     fn markdown_body(&self, md: Option<&str>) -> AnyElement {
@@ -3894,128 +3834,6 @@ impl Workspace {
 
     // ---------- 받은편지함 ----------
 
-    fn inbox_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        let snap = self.snap();
-        let items = vm::inbox(&snap);
-        let mut col = div()
-            .id("inbox")
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_5()
-            .size_full()
-            .overflow_y_scroll()
-            .child(div().text_lg().text_color(rgb(TEXT)).child("확인 요청"))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(MUTED))
-                    .pb_2()
-                    .child("에이전트가 승인이나 답을 기다리는 일만 모입니다."),
-            );
-        if items.is_empty() {
-            col = col.child(empty_state(
-                "모두 처리했습니다",
-                "에이전트가 막히거나 질문하면 여기에 나타납니다.",
-            ));
-        }
-        for (n, it) in items.iter().enumerate() {
-            let e = it.event().clone();
-            let card_path = vm::card_of_topic(&e.topic);
-            let card_title = card_path
-                .as_ref()
-                .and_then(|p| snap.card_by_path(p))
-                .map(|c| c.title.clone())
-                .unwrap_or_else(|| e.topic.clone());
-            let (label, color, text) = match it {
-                InboxItem::Permission(_) => ("권한 요청", AMBER, format::permission_line(&e)),
-                InboxItem::Question(_) => {
-                    let ti = vm::thread_item(&e);
-                    (
-                        if e.kind == "msg.error" {
-                            "오류"
-                        } else {
-                            "질문"
-                        },
-                        tone_color(ti.tone),
-                        ti.text,
-                    )
-                }
-            };
-            let mut row = div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .p_3()
-                .rounded_md()
-                .bg(rgb(PANEL))
-                .border_l_2()
-                .border_color(rgb(color))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .text_xs()
-                        .child(div().text_color(rgb(color)).child(label))
-                        .child(div().text_color(rgb(MUTED)).truncate().child(card_title))
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .text_color(rgb(FAINT))
-                                .child(format::ago(now_ms(), e.ts)),
-                        ),
-                )
-                .child(div().text_sm().text_color(rgb(TEXT)).child(text));
-            let mut btns = div().flex().flex_row().gap_2().pt_1();
-            if let InboxItem::Permission(p) = it {
-                let seq = p.seq;
-                btns = btns
-                    .child(
-                        button(("ibx-allow", n), "승인", Btn::Ok).on_click(cx.listener(
-                            move |this, _: &ClickEvent, _w, cx| {
-                                this.send(Action::ResolvePermission { seq, allow: true });
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(
-                        button(("ibx-deny", n), "거절", Btn::Danger).on_click(cx.listener(
-                            move |this, _: &ClickEvent, _w, cx| {
-                                this.send(Action::ResolvePermission { seq, allow: false });
-                                cx.notify();
-                            },
-                        )),
-                    );
-            }
-            if let Some(p) = card_path {
-                btns = btns.child(button(("ibx-open", n), "카드 열기", Btn::Ghost).on_click(
-                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.nav = Nav::Board;
-                        this.card_tab = CardTab::Thread;
-                        this.open_card(p.clone(), cx);
-                        window.focus(&this.composer.focus_handle(cx));
-                    }),
-                ));
-            } else {
-                btns = btns.child(
-                    button(("ibx-orch", n), "오케스트레이터 열기", Btn::Ghost).on_click(
-                        cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.nav = Nav::Orchestrator;
-                            window.focus(&this.orch_input.focus_handle(cx));
-                            cx.notify();
-                        }),
-                    ),
-                );
-            }
-            row = row.child(btns);
-            col = col.child(row);
-        }
-        col.into_any_element()
-    }
-
-    // ---------- 오케스트레이터 ----------
-
     fn orchestrator_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let snap = self.snap();
         let Some(project) = self
@@ -4047,7 +3865,11 @@ impl Workspace {
             .flex_none()
             .border_b_1()
             .border_color(rgb(LINE))
-            .child(avatar(&vm::bot_look("orchestrator"), 30.))
+            .child(avatar_mood(
+                &vm::bot_look("orchestrator"),
+                vm::mood_of("", false, orch.as_ref().map(|o| o.state.as_str())),
+                30.,
+            ))
             .child(
                 div()
                     .flex()
@@ -4058,43 +3880,21 @@ impl Workspace {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("오케스트레이터"),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(FAINT))
-                            .child(format!("{project} 프로젝트 전체를 맡는 봇")),
-                    ),
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(match &orch {
+                        Some(_) => format!("{project} · 들어온 일을 나눠 카드로 만듭니다"),
+                        None => format!("{project} · 쉬는 중, 말을 보내면 깨어납니다"),
+                    })),
             )
             .child(div().flex_1())
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child(dot(orch
-                        .as_ref()
-                        .map(|o| instance_color(&o.state))
-                        .unwrap_or(FAINT)))
-                    .child(match &orch {
-                        Some(o) => format!(
-                            "{} · {}",
-                            format::agent_label(&o.agent),
-                            format::status_label(&o.state)
-                        ),
-                        None => "쉬는 중 · 말을 보내면 깨어납니다".to_string(),
-                    }),
-            )
             .children(orch.map(|o| {
                 let id = o.id.clone();
-                button("orch-stop", "멈추기", Btn::Danger).on_click(cx.listener(
+                link_btn("orch-stop", "멈추기").on_click(cx.listener(
                     move |this, _: &ClickEvent, _w, _cx| {
                         this.send(Action::StopInstance(id.clone()))
                     },
                 ))
-            }));
+            }))
+            .child(self.close_btn(cx));
         let composer = self.composer_row(self.orch_input.clone(), "send-orch", cx, |this, cx| {
             let text = this.orch_input.read(cx).text();
             if !text.trim().is_empty() {
@@ -4119,6 +3919,64 @@ impl Workspace {
 
     // ---------- 에이전트 ----------
 
+    /// 설정: 연결(바깥 출처)과 에이전트·봇을 한 화면에서 고른다.
+    fn settings_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tab = self.settings_tab;
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .px_5()
+                    .h(px(48.))
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(rgb(LINE))
+                    .child(
+                        div()
+                            .text_color(rgb(TEXT))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("설정"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .p(px(2.))
+                            .gap(px(2.))
+                            .rounded_md()
+                            .bg(rgb(PANEL))
+                            .child(
+                                chip("set-conn", "연결", tab == SettingsTab::Connectors).on_click(
+                                    cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                        this.settings_tab = SettingsTab::Connectors;
+                                        this.send(Action::LoadConnectors);
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                chip("set-agents", "에이전트와 봇", tab == SettingsTab::Agents)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                        this.settings_tab = SettingsTab::Agents;
+                                        this.send(Action::LoadAgents);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .child(div().flex_1().min_h(px(0.)).child(match tab {
+                SettingsTab::Connectors => self.connectors_page(cx),
+                SettingsTab::Agents => self.agents_page(cx),
+            }))
+            .into_any_element()
+    }
+
     fn agents_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let snap = self.snap();
         let mut col = div()
@@ -4129,7 +3987,39 @@ impl Workspace {
             .p_5()
             .size_full()
             .overflow_y_scroll()
-            .child(div().text_lg().text_color(rgb(TEXT)).child("에이전트"))
+            .child(section_label("추가 봇").px_0())
+            .child(
+                div()
+                    .id("extra-bots")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(rgb(PANEL))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(avatar(&vm::bot_look("reviewer"), 24.))
+                    .child(avatar(&vm::bot_look("researcher"), 24.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .child(div().text_sm().text_color(rgb(TEXT)).child("리뷰어와 리서처 쓰기"))
+                            .child(div().text_xs().text_color(rgb(MUTED)).child(
+                                "기본은 오케스트레이터와 워커뿐입니다. 켜면 카드에서 \"+ 봇 부르기\"로 다른 봇을 대화에 부를 수 있습니다.",
+                            )),
+                    )
+                    .child(chip("extra-bots-chip", if self.extra_bots { "켜짐" } else { "꺼짐" }, self.extra_bots))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.extra_bots = !this.extra_bots;
+                        prefs::save_extra_bots(this.extra_bots);
+                        cx.notify();
+                    })),
+            )
             .child(section_label("백엔드").px_0());
         if self.agents.is_empty() {
             col = col.child(div().text_sm().text_color(rgb(FAINT)).child("확인하는 중…"));
@@ -4418,94 +4308,6 @@ impl Workspace {
 
     // ---------- 수집함(바깥 사이클) ----------
 
-    fn intake_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        let groups = vm::group_intake(&self.intake, self.project.as_deref());
-        let has_conn = !self.connectors.is_empty();
-        let mut col = div()
-            .id("intake")
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_5()
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(div().text_lg().text_color(rgb(TEXT)).child("수집함"))
-                    .child(div().flex_1())
-                    .child(
-                        button("ik-sync", "지금 동기화", Btn::Ghost).on_click(cx.listener(
-                            |this, _: &ClickEvent, _w, cx| {
-                                this.send(Action::SyncConnectors(None));
-                                this.send(Action::LoadIntake);
-                                this.send(Action::LoadConnectors);
-                                this.toast("연결된 출처를 동기화하는 중…", false);
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(
-                        button("ik-conn", "연결 관리", Btn::Subtle).on_click(cx.listener(
-                            |this, _: &ClickEvent, _w, cx| {
-                                this.nav = Nav::Connectors;
-                                this.send(Action::LoadConnectors);
-                                cx.notify();
-                            },
-                        )),
-                    ),
-            )
-            .child(div().text_sm().text_color(rgb(MUTED)).child(
-                "메신저·GitHub·메모처럼 코드 밖에서 들어온 해야 할 일입니다. 카드로 만들면 \
-                 원문 대신 짧은 요약만 워커에게 넘어가고, 카드가 끝나면 회신 대기로 돌아옵니다.",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .py_2()
-                    .child(self.memo_input.clone()),
-            );
-        if groups.is_empty() {
-            col = col.child(empty_state(
-                "수집함이 비어 있습니다",
-                if has_conn {
-                    "연결된 출처에서 새 메시지가 오면 여기에 모입니다. 위 칸에 직접 메모를 넣을 수도 있습니다."
-                } else {
-                    "왼쪽 '연결'에서 Slack 같은 출처를 연결하거나, 위 칸에 직접 메모를 넣어 보세요."
-                },
-            ));
-        }
-        let mut n = 0usize;
-        for (label, items) in groups {
-            col = col.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .pt_3()
-                    .text_xs()
-                    .text_color(rgb(match label {
-                        "new" => VIOLET,
-                        "reply_pending" => AMBER,
-                        _ => FAINT,
-                    }))
-                    .child(vm::intake_state_label(label))
-                    .child(div().text_color(rgb(FAINT)).child(items.len().to_string())),
-            );
-            for it in items {
-                n += 1;
-                col = col.child(self.intake_row(n, &it, cx));
-            }
-        }
-        col.into_any_element()
-    }
-
     fn intake_row(&self, n: usize, it: &IntakeItem, cx: &mut Context<Self>) -> Div {
         let color = match it.state.as_str() {
             "new" => VIOLET,
@@ -4682,10 +4484,9 @@ impl Workspace {
             .p_5()
             .size_full()
             .overflow_y_scroll()
-            .child(div().text_lg().text_color(rgb(TEXT)).child("연결"))
             .child(div().text_sm().text_color(rgb(MUTED)).child(
                 "MCP 서버로 바깥 출처를 연결합니다. 연결마다 주기적으로 새 메시지를 읽어 \
-                 수집함에 넣고, 사람이 승인한 답장만 다시 보냅니다. 토큰은 이 컴퓨터의 \
+                 보드의 들어온 일 열에 넣고, 사람이 승인한 답장만 다시 보냅니다. 토큰은 이 컴퓨터의 \
                  .jadecode/connectors.toml(권한 0600)에만 저장됩니다.",
             ));
 
@@ -4863,11 +4664,7 @@ impl Render for Workspace {
 
         let page = match self.nav {
             Nav::Board => self.board_page(cx),
-            Nav::Inbox => self.inbox_page(cx),
-            Nav::Orchestrator => self.orchestrator_page(cx),
-            Nav::Agents => self.agents_page(cx),
-            Nav::Intake => self.intake_page(cx),
-            Nav::Connectors => self.connectors_page(cx),
+            Nav::Settings => self.settings_page(cx),
         };
         let modal = self.modal_view(cx);
         let toast = self.toast_view();
@@ -4885,20 +4682,15 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CloseModal, w, cx| {
                 if this.modal.is_some() {
                     this.close_modal(w, cx)
-                } else if this.selected_card.is_some() {
-                    this.selected_card = None;
+                } else if this.side != Side::None {
+                    this.close_side();
                     cx.notify();
                 }
             }))
-            .on_action(cx.listener(|this, _: &GoIntake, w, cx| {
-                this.nav = Nav::Intake;
-                this.send(Action::LoadIntake);
-                w.focus(&this.memo_input.focus_handle(cx));
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &GoConnectors, _w, cx| {
-                this.nav = Nav::Connectors;
+            .on_action(cx.listener(|this, _: &GoSettings, _w, cx| {
+                this.nav = Nav::Settings;
                 this.send(Action::LoadConnectors);
+                this.send(Action::LoadAgents);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &CheckUpdate, _w, cx| {
@@ -4917,34 +4709,15 @@ impl Render for Workspace {
                 );
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &GoInbox, _w, cx| {
-                this.nav = Nav::Inbox;
-                cx.notify();
-            }))
             .on_action(cx.listener(|this, _: &GoOrchestrator, w, cx| {
-                this.nav = Nav::Orchestrator;
-                this.set_project(
-                    this.project
-                        .clone()
-                        .or_else(|| this.snap().projects.first().map(|p| p.slug.clone())),
-                    cx,
-                );
-                w.focus(&this.orch_input.focus_handle(cx));
+                this.open_orchestrator(w, cx);
             }))
             .on_action(cx.listener(|this, _: &GoBoard, _w, cx| {
                 this.nav = Nav::Board;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &GoAgents, _w, cx| {
-                this.nav = Nav::Agents;
-                this.send(Action::LoadAgents);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &ToggleBoardMode, _w, cx| {
-                this.board_mode = match this.board_mode {
-                    BoardMode::List => BoardMode::Kanban,
-                    BoardMode::Kanban => BoardMode::List,
-                };
+            .on_action(cx.listener(|this, _: &ToggleWaiting, _w, cx| {
+                this.only_waiting = !this.only_waiting;
                 this.nav = Nav::Board;
                 cx.notify();
             }))
@@ -4960,7 +4733,7 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusComposer, w, cx| {
-                if this.nav == Nav::Orchestrator {
+                if this.side == Side::Orchestrator {
                     w.focus(&this.orch_input.focus_handle(cx));
                 } else if this.selected_card.is_some() {
                     this.card_tab = CardTab::Thread;
