@@ -1668,24 +1668,33 @@ impl Workspace {
         cx.notify();
     }
 
-    fn live_worker(&self, card: &str) -> Option<String> {
-        self.snap()
-            .instances_of(card)
-            .iter()
-            .find(|i| i.role != "orchestrator")
-            .map(|i| i.id.clone())
+    /// 카드 대화 이벤트(이력 + 실시간).
+    fn card_events(&self, card: &str) -> Vec<EventRow> {
+        let topic = vm::card_topic(card);
+        let hist = self
+            .histories
+            .get(&topic)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        vm::thread(hist, &self.snap().recent, &topic, false)
     }
 
-    /// 카드 대화에서 말을 받을 봇: 고른 봇이 살아 있으면 그 봇, 아니면 첫 봇.
-    fn talk_target(&self, card: &str) -> Option<String> {
+    /// 카드 대화에서 말을 받을 봇과, 떠 있으면 그 인스턴스.
+    /// 고른 봇 → 첫 참여 봇 → 워커 순서로 정한다.
+    fn talk_target(&self, card: &str) -> (String, Option<String>) {
         let snap = self.snap();
-        let members = snap.instances_of(card);
-        if let Some(t) = &self.talk_to {
-            if members.iter().any(|i| &i.id == t) {
-                return Some(t.clone());
-            }
-        }
-        self.live_worker(card)
+        let members = vm::card_members(&self.card_events(card), &snap.instances, card);
+        let bot = self
+            .talk_to
+            .clone()
+            .filter(|t| members.iter().any(|(b, _)| b == t))
+            .or_else(|| members.first().map(|(b, _)| b.clone()))
+            .unwrap_or_else(|| "worker".to_string());
+        let inst = members
+            .iter()
+            .find(|(b, _)| b == &bot)
+            .and_then(|(_, i)| i.as_ref().map(|i| i.id.clone()));
+        (bot, inst)
     }
 
     fn send_from_composer(&mut self, text: String, cx: &mut Context<Self>) {
@@ -1696,21 +1705,23 @@ impl Workspace {
         let Some(c) = snap.card_by_path(&card) else {
             return;
         };
-        match self.talk_target(&card) {
+        let (bot, inst) = self.talk_target(&card);
+        match inst {
             Some(inst) => self.send(Action::SendInstance {
                 instance: inst,
                 text,
             }),
             None => {
-                // 일하는 워커가 없으면 띄우고 그 말을 첫 지시로 보낸다.
+                // 받을 봇이 쉬고 있으면 깨워서 그 말을 첫 지시로 보낸다.
+                let name = vm::bot_look(&bot).name;
                 self.send(Action::StartWorker {
                     project: c.project.clone(),
                     card: card.clone(),
-                    bot: "worker".into(),
+                    bot,
                     agent: self.agent_choice.clone(),
                     then_send: Some(text),
                 });
-                self.toast("워커를 시작하고 말을 전합니다", false);
+                self.toast(format!("{name}를 깨워 말을 전합니다"), false);
             }
         }
         self.thread_scroll.scroll_to_bottom();
@@ -2897,7 +2908,6 @@ impl Workspace {
             return empty_state("카드를 찾을 수 없습니다", &path).into_any_element();
         };
         let detail = self.details.get(&path);
-        let insts: Vec<_> = snap.instances_of(&path).into_iter().cloned().collect();
         let stages: Vec<String> = detail
             .map(|d| d.stages.clone())
             .filter(|s| !s.is_empty())
@@ -2995,9 +3005,8 @@ impl Workspace {
 
         // 대화에 참여한 봇
         let project = card.project.clone();
-        let members: Vec<&crate::board::Instance> =
-            insts.iter().filter(|i| i.role != "orchestrator").collect();
-        let target = self.talk_target(&path);
+        let members = vm::card_members(&self.card_events(&path), &snap.instances, &path);
+        let (target_bot, _) = self.talk_target(&path);
         let mut actions_row = div().flex().flex_row().flex_wrap().items_center().gap_2();
         if members.is_empty() {
             actions_row = actions_row.child(
@@ -3012,62 +3021,64 @@ impl Workspace {
                     .child("아직 대화에 봇이 없습니다. 말을 보내면 워커가 들어옵니다."),
             );
         }
-        for (ii, i) in members.iter().enumerate() {
-            let look = vm::bot_look(&i.bot);
-            let on = target.as_deref() == Some(i.id.as_str());
-            let (pick, stop) = (i.id.clone(), i.id.clone());
-            actions_row =
-                actions_row.child(
-                    div()
-                        .id(("member", ii))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .pl_1()
-                        .pr_2()
-                        .py_1()
-                        .rounded_full()
-                        .bg(rgb(if on { SELECTED } else { PANEL }))
-                        .border_1()
-                        .border_color(rgb(if on { look.color } else { PANEL }))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgb(HOVER)))
-                        .child(avatar(&look, 22.))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(TEXT))
-                                .child(look.name.clone()),
-                        )
-                        .child(dot(instance_color(&i.state)))
-                        .child(div().text_xs().text_color(rgb(FAINT)).child(
-                            match i.state.as_str() {
-                                "busy" => "작업 중".to_string(),
-                                "starting" => "준비 중".to_string(),
-                                _ => format!("대기 · {}턴", i.turns),
-                            },
-                        ))
-                        .child(
-                            div()
-                                .id(("member-stop", ii))
-                                .px_1()
-                                .rounded_sm()
-                                .text_xs()
-                                .text_color(rgb(FAINT))
-                                .hover(|s| s.text_color(rgb(RED)))
-                                .child("✕")
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                                    cx.stop_propagation();
-                                    this.send(Action::StopInstance(stop.clone()));
-                                    cx.notify();
-                                })),
-                        )
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.talk_to = Some(pick.clone());
-                            cx.notify();
-                        })),
-                );
+        for (ii, (bot, live)) in members.iter().enumerate() {
+            let look = vm::bot_look(bot);
+            let on = &target_bot == bot;
+            let pick = bot.clone();
+            let state = live.as_ref().map(|i| i.state.clone());
+            let stop = live.as_ref().map(|i| i.id.clone());
+            actions_row = actions_row.child(
+                div()
+                    .id(("member", ii))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .pl_1()
+                    .pr_2()
+                    .py_1()
+                    .rounded_full()
+                    .bg(rgb(if on { SELECTED } else { PANEL }))
+                    .border_1()
+                    .border_color(rgb(if on { look.color } else { PANEL }))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(avatar(&look, 22.).when(live.is_none(), |d| d.opacity(0.6)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT))
+                            .child(look.name.clone()),
+                    )
+                    .child(dot(state.as_deref().map(instance_color).unwrap_or(FAINT)))
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(
+                        match (state.as_deref(), live) {
+                            (Some("busy"), _) => "작업 중".to_string(),
+                            (Some("starting"), _) => "준비 중".to_string(),
+                            (Some(_), Some(i)) => format!("대기 · {}턴", i.turns),
+                            _ => "쉬는 중".to_string(),
+                        },
+                    ))
+                    .children(stop.map(|stop| {
+                        div()
+                            .id(("member-stop", ii))
+                            .px_1()
+                            .rounded_sm()
+                            .text_xs()
+                            .text_color(rgb(FAINT))
+                            .hover(|s| s.text_color(rgb(RED)))
+                            .child("✕")
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                cx.stop_propagation();
+                                this.send(Action::StopInstance(stop.clone()));
+                                cx.notify();
+                            }))
+                    }))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.talk_to = Some(pick.clone());
+                        cx.notify();
+                    })),
+            );
         }
         actions_row = actions_row.child(
             div()
@@ -3283,10 +3294,8 @@ impl Workspace {
         };
 
         let composer: Option<AnyElement> = (tab == CardTab::Thread).then(|| {
-            let to = target
-                .as_ref()
-                .and_then(|t| insts.iter().find(|i| &i.id == t))
-                .map(|i| vm::bot_look(&i.bot));
+            let (tb, _) = self.talk_target(&path);
+            let to = (!members.is_empty() || self.talk_to.is_some()).then(|| vm::bot_look(&tb));
             let placeholder = match &to {
                 Some(l) => format!("{}에게 말하기 · Enter로 보내기, Shift-Enter 줄바꿈", l.name),
                 None => "말을 보내면 워커가 들어와 이 카드에서 일합니다 · Enter".to_string(),

@@ -930,7 +930,8 @@ pub fn chat_rows(
             _ => ChatEntry::Notice {
                 seq: e.seq,
                 kind: e.kind.clone(),
-                head: it.head,
+                // 누가 했는지는 묶음 머리가 이미 말한다.
+                head: it.head.split(" · ").next().unwrap_or("").to_string(),
                 text: it.text,
                 tone: it.tone,
             },
@@ -971,6 +972,42 @@ pub fn chat_rows(
     out
 }
 
+/// 카드 대화의 참여 봇: 지금 떠 있는 봇과 대화에 말한 적 있는 봇(봇 이름당 하나).
+/// 떠 있는 봇이 앞, 그다음은 마지막으로 말한 순서.
+pub fn card_members(
+    events: &[EventRow],
+    live: &[crate::board::Instance],
+    card: &str,
+) -> Vec<(String, Option<crate::board::Instance>)> {
+    let mut out: Vec<(String, Option<crate::board::Instance>)> = vec![];
+    for i in live
+        .iter()
+        .filter(|i| i.card.as_deref() == Some(card) && i.role != "orchestrator")
+    {
+        if !out.iter().any(|(b, _)| b == &i.bot) {
+            out.push((i.bot.clone(), Some(i.clone())));
+        }
+    }
+    let map = bot_map(events, live);
+    let mut spoke: Vec<String> = vec![];
+    for e in events.iter().rev() {
+        if speaker_of(e).is_none() {
+            continue;
+        }
+        let b = bot_of(e, &map);
+        if b.is_empty() || b == "orchestrator" || spoke.contains(&b) {
+            continue;
+        }
+        spoke.push(b);
+    }
+    for b in spoke {
+        if !out.iter().any(|(x, _)| x == &b) {
+            out.push((b, None));
+        }
+    }
+    out
+}
+
 /// 대화 목록 미리보기: (누가, 무엇).
 pub fn chat_preview(e: &EventRow) -> (String, String) {
     let it = thread_item(e);
@@ -981,7 +1018,11 @@ pub fn chat_preview(e: &EventRow) -> (String, String) {
     let text = match e.kind.as_str() {
         "instance.output" => it.text,
         _ if it.head.is_empty() => it.text,
-        _ => format!("{} · {}", it.head, it.text),
+        _ => format!(
+            "{} · {}",
+            it.head.split(" · ").next().unwrap_or(""),
+            it.text
+        ),
     };
     (who, short(&text, 120))
 }
@@ -1287,5 +1328,38 @@ mod tests {
         ));
         assert_eq!(who, "워커");
         assert_eq!(text, "원인을 찾았습니다");
+    }
+
+    #[test]
+    fn members_include_bots_that_spoke() {
+        use serde_json::json;
+        let evs = vec![
+            row(
+                1,
+                "instance.output",
+                json!({"instance":"w-a","bot":"worker","text":"a"}),
+            ),
+            row(
+                2,
+                "instance.output",
+                json!({"instance":"w-b","bot":"reviewer","text":"b"}),
+            ),
+            row(
+                3,
+                "instance.output",
+                json!({"instance":"w-c","bot":"worker","text":"c"}),
+            ),
+        ];
+        let live = vec![crate::board::Instance {
+            id: "w-d".into(),
+            role: "worker".into(),
+            bot: "researcher".into(),
+            card: Some("work/p/c".into()),
+            ..Default::default()
+        }];
+        let m = card_members(&evs, &live, "work/p/c");
+        let names: Vec<&str> = m.iter().map(|(b, _)| b.as_str()).collect();
+        assert_eq!(names, vec!["researcher", "worker", "reviewer"]);
+        assert!(m[0].1.is_some() && m[1].1.is_none());
     }
 }
