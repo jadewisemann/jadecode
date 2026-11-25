@@ -688,7 +688,7 @@ fn run_action(
                 None => (text.trim().to_string(), String::new()),
             };
             match rt.block_on(b.intake_add(&project, &title, &body)) {
-                Ok(_) => Outcome::Info("수집함에 넣었습니다".into()),
+                Ok(_) => Outcome::Info("들어온 일에 넣었습니다".into()),
                 Err(e) => fail("메모 넣기 실패", e),
             }
         }
@@ -1127,8 +1127,7 @@ impl Workspace {
         let card_title = cx.new(|cx| TextInput::new(cx, "무엇을 할까요? (카드 제목)"));
         let card_body =
             cx.new(|cx| TextInput::new(cx, "자세한 설명 (선택) · Shift-Enter 줄바꿈").multiline(6));
-        let memo_input =
-            cx.new(|cx| TextInput::new(cx, "직접 메모 넣기 · \"제목 - 내용\" · Enter"));
+        let memo_input = cx.new(|cx| TextInput::new(cx, "메모로 일 추가 · Enter"));
         let reply_input = cx.new(|cx| {
             TextInput::new(cx, "답장 내용 · Enter 보내기 · Shift-Enter 줄바꿈").multiline(6)
         });
@@ -2558,7 +2557,7 @@ impl Workspace {
                             cx.notify();
                         })),
                 )
-                .child(self.memo_input.clone());
+                .child(div().flex_none().child(self.memo_input.clone()));
         }
         col = col.child(
             div()
@@ -2853,14 +2852,18 @@ impl Workspace {
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
+                    .overflow_hidden()
                     .child(self.board_toolbar(cx))
                     .child(div().flex_1().min_h(px(0.)).child(body)),
             )
             .children(side.map(|p| {
                 div()
                     .flex_none()
-                    .w(px(560.))
+                    .w(relative(0.58))
+                    .max_w(px(600.))
                     .h_full()
+                    .bg(rgb(BG))
+                    .overflow_hidden()
                     .border_l_1()
                     .border_color(rgb(LINE))
                     .child(p)
@@ -3199,6 +3202,7 @@ impl Workspace {
                         div()
                             .flex_1()
                             .min_h(px(0.))
+                            .overflow_hidden()
                             .child(self.thread_body(&snap, events, "thread", cx)),
                     )
                     .into_any_element()
@@ -4078,11 +4082,13 @@ impl Workspace {
                     .rounded_md()
                     .bg(rgb(PANEL))
                     .text_sm()
+                    .items_center()
+                    .child(avatar(&vm::bot_look(&b.name), 22.))
                     .child(
                         div()
                             .w(px(120.))
                             .text_color(rgb(TEXT))
-                            .child(b.name.clone()),
+                            .child(vm::bot_look(&b.name).name),
                     )
                     .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
                         "{}{}",
