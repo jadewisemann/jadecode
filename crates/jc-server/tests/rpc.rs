@@ -260,15 +260,32 @@ async fn subscribe_receives_events_after_from_seq() {
     .await;
     assert_eq!(sub["result"]["head_seq"], head);
     let id = cards[0].state.front.id.clone();
-    let seq = call(
-        &mut ws,
-        3,
-        "card.append_event",
-        json!({"card": id, "kind": "msg.report", "body": {"text": "done"}}),
-    )
-    .await;
-    let seq = seq["result"]["seqs"][0].as_u64().unwrap();
-    let n = next_notification(&mut ws).await;
+    // 알림이 응답보다 먼저 올 수 있으니 둘 다 받을 때까지 읽는다(`call`은 알림을 버린다).
+    ws.send(Message::text(
+        json!({"jsonrpc":"2.0","id":3,"method":"card.append_event",
+               "params":{"card": id, "kind": "msg.report", "body": {"text": "done"}}})
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let (mut resp, mut note) = (None::<Value>, None::<Value>);
+    while resp.is_none() || note.is_none() {
+        let msg = tokio::time::timeout(Duration::from_secs(15), ws.next())
+            .await
+            .expect("timeout")
+            .expect("closed")
+            .unwrap();
+        if let Message::Text(t) = msg {
+            let v: Value = serde_json::from_str(&t).unwrap();
+            if v.get("id").and_then(|x| x.as_u64()) == Some(3) {
+                resp = Some(v);
+            } else if v.get("method").and_then(|m| m.as_str()) == Some("events.event") {
+                note = Some(v);
+            }
+        }
+    }
+    let seq = resp.unwrap()["result"]["seqs"][0].as_u64().unwrap();
+    let n = note.unwrap();
     assert_eq!(n["params"]["event"]["seq"], seq);
     assert_eq!(n["params"]["event"]["kind"], "msg.report");
     assert_eq!(n["params"]["event"]["body"]["text"], "done");
