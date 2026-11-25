@@ -17,6 +17,8 @@ pub const AMBER: u32 = 0xe5a84b;
 pub const RED: u32 = 0xe5645c;
 pub const VIOLET: u32 = 0xa883f0;
 pub const WHITE: u32 = 0xffffff;
+/// 사람이 보낸 말풍선.
+pub const HUMAN_BUBBLE: u32 = 0x3557b7;
 
 pub const MONO: &str = "Menlo";
 

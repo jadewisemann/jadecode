@@ -189,6 +189,36 @@ pub fn card_rows(conn: &Connection) -> Result<Vec<CardRow>> {
     Ok(rows)
 }
 
+/// 카드 대화에서 사람에게 보일 마지막 말(목록 미리보기). 없으면 None.
+pub const CHAT_KINDS: &[&str] = &[
+    "msg.human",
+    "instance.output",
+    "msg.ask",
+    "msg.report",
+    "msg.report_done",
+    "msg.propose",
+    "msg.escalation",
+    "msg.error",
+    "permission.requested",
+];
+
+pub fn last_chat_line(conn: &Connection, topic: &str) -> Result<Option<String>> {
+    let kinds = CHAT_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT line FROM events WHERE topic = ?1 AND kind IN ({kinds}) ORDER BY seq DESC LIMIT 1"
+    );
+    let mut st = conn.prepare_cached(&sql)?;
+    let mut rows = st.query([topic])?;
+    Ok(match rows.next()? {
+        Some(r) => Some(r.get::<_, String>(0)?),
+        None => None,
+    })
+}
+
 /// seq → topic/kind 머리(검사·디버그용).
 pub fn seq_heads(conn: &Connection, from: u64, to: u64) -> Result<HashMap<u64, (String, String)>> {
     let mut s = conn.prepare("SELECT seq, topic, kind FROM events WHERE seq BETWEEN ?1 AND ?2")?;

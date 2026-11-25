@@ -18,6 +18,9 @@ pub struct Card {
     pub project: String,
     pub stage: String,
     pub status: String,
+    /// 카드 대화의 마지막 말(목록 미리보기).
+    #[serde(default)]
+    pub last: Option<EventRow>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -358,6 +361,7 @@ impl Board {
                     project: v["project"].as_str().unwrap_or("").to_string(),
                     stage: v["stage"].as_str().unwrap_or("").to_string(),
                     status: v["status"].as_str().unwrap_or("idle").to_string(),
+                    last: serde_json::from_value(v["last"].clone()).ok(),
                 })
             })
             .collect();
@@ -493,6 +497,23 @@ impl Board {
                 self.snapshot.recent.drain(0..cut);
             }
         }
+        if jc_core::index::CHAT_KINDS.contains(&ev.kind.as_str())
+            && !(ev.kind == "msg.report" && ev.body["auto"].as_bool() == Some(true))
+        {
+            let path = card_path_from_topic(&ev.topic);
+            if let Some(c) = self.snapshot.cards.iter_mut().find(|c| c.path == path) {
+                if c.last.as_ref().map(|l| l.seq < ev.seq).unwrap_or(true) {
+                    c.last = Some(ev.clone());
+                }
+            }
+        }
+        if ev.kind == "instance.output" || ev.kind == "instance.tool_use" {
+            if let Some(id) = ev.body["instance"].as_str() {
+                if let Some(i) = self.snapshot.instances.iter_mut().find(|i| i.id == id) {
+                    i.state = "busy".into();
+                }
+            }
+        }
         match ev.kind.as_str() {
             "card.created" => {
                 let id = ev.body["id"].as_str().unwrap_or("").to_string();
@@ -518,6 +539,7 @@ impl Board {
                         .unwrap_or("")
                         .to_string(),
                     status: "idle".into(),
+                    last: None,
                 });
             }
             "card.stage_changed" => {
@@ -987,6 +1009,22 @@ impl Board {
         Ok(v["instance"]["id"].as_str().unwrap_or("").to_string())
     }
 
+    /// 카드 대화에 다른 봇(리뷰어·리서처 등)을 부른다.
+    pub async fn start_bot(
+        &mut self,
+        project: &str,
+        card: &str,
+        bot: &str,
+        agent: Option<&str>,
+    ) -> Result<String> {
+        let mut p = json!({"role":"worker","project":project,"card":card,"bot":bot});
+        if let Some(a) = agent {
+            p["agent"] = json!(a);
+        }
+        let v = self.call("instance.start", p).await?;
+        Ok(v["instance"]["id"].as_str().unwrap_or("").to_string())
+    }
+
     /// 연결이 살아 있는가(끊기면 구독 스레드가 다시 붙는다).
     pub fn is_connected(&self) -> bool {
         self.ws.is_some()
@@ -1086,6 +1124,7 @@ mod tests {
                 project: project.into(),
                 stage: stage.into(),
                 status: "idle".into(),
+                last: None,
             });
         }
         assert_eq!(s.stages(Some("api")), vec!["refine", "implement"]);
@@ -1198,6 +1237,7 @@ mod handle_tests {
                 project: "p".into(),
                 stage: "구현".into(),
                 status: "idle".into(),
+                last: None,
             });
         }
         let h = SnapshotHandle::new(s);

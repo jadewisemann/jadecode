@@ -272,6 +272,24 @@ async fn subscribe_receives_events_after_from_seq() {
     assert_eq!(n["params"]["event"]["seq"], seq);
     assert_eq!(n["params"]["event"]["kind"], "msg.report");
     assert_eq!(n["params"]["event"]["body"]["text"], "done");
+    // 목록은 카드 대화의 마지막 말을 미리보기로 싣는다.
+    let mut last = Value::Null;
+    for i in 0..40 {
+        let list = call(&mut ws, 10 + i, "cards.list", json!({})).await;
+        last = list["result"]["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id.as_str())
+            .unwrap()["last"]
+            .clone();
+        if !last.is_null() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(last["kind"], "msg.report", "{last}");
+    assert_eq!(last["body"]["text"], "done");
     h.client.abort();
 }
 

@@ -279,6 +279,7 @@ fn client_cost(root: &Path, iterations: usize) -> Result<Value> {
             project: c.split('/').nth(1).unwrap_or("p0").to_string(),
             stage: "구현".into(),
             status: "idle".into(),
+            last: None,
         });
     }
     snap.projects.push(jc_client::board::Project {

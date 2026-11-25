@@ -100,8 +100,14 @@ pub fn group_cards(s: &BoardSnapshot, project: Option<&str>) -> Vec<(Attention, 
         }
     }
     for g in &mut groups {
-        // 최근 카드가 위(ULID는 시간 순이다).
-        g.1.sort_by(|a, b| b.id.cmp(&a.id));
+        // 대화가 최근에 오간 카드가 위, 대화가 없으면 최근 카드가 위(ULID는 시간 순이다).
+        g.1.sort_by(|a, b| {
+            let (ta, tb) = (
+                a.last.as_ref().map(|l| l.seq).unwrap_or(0),
+                b.last.as_ref().map(|l| l.seq).unwrap_or(0),
+            );
+            tb.cmp(&ta).then_with(|| b.id.cmp(&a.id))
+        });
     }
     groups.retain(|g| !g.1.is_empty());
     groups
@@ -743,6 +749,284 @@ pub fn collect_diff(card_dir: &Path, max_lines: usize) -> String {
     out
 }
 
+// ---------- 봇과의 대화(채팅) ----------
+
+/// 봇 하나가 화면에서 어떻게 보이는가.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BotLook {
+    /// 사람이 읽는 이름(워커·리뷰어…).
+    pub name: String,
+    /// 아바타 글자.
+    pub glyph: String,
+    /// 고유 색(0xRRGGBB).
+    pub color: u32,
+}
+
+/// 봇 이름 → 아바타·이름·색. 모르는 봇은 이름에서 색을 고른다.
+pub fn bot_look(bot: &str) -> BotLook {
+    let (name, glyph, color) = match bot {
+        "orchestrator" => ("오케스트레이터", "O", 0xa78bfa),
+        "worker" => ("워커", "W", 0x6e98ff),
+        "reviewer" => ("리뷰어", "R", 0xf0b04a),
+        "researcher" => ("리서처", "S", 0x3fc1b0),
+        "" => ("에이전트", "A", 0x8a91a2),
+        other => {
+            const PALETTE: [u32; 4] = [0xf472b6, 0x84cc16, 0xfb923c, 0x38bdf8];
+            let h = other
+                .bytes()
+                .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+            let g: String = other.chars().take(1).collect::<String>().to_uppercase();
+            return BotLook {
+                name: other.to_string(),
+                glyph: g,
+                color: PALETTE[(h as usize) % PALETTE.len()],
+            };
+        }
+    };
+    BotLook {
+        name: name.into(),
+        glyph: glyph.into(),
+        color,
+    }
+}
+
+/// 이벤트를 낸 인스턴스 id(사람·시스템이면 None).
+pub fn speaker_of(e: &EventRow) -> Option<String> {
+    if e.kind == "msg.human" {
+        return None;
+    }
+    e.body["actor"]["instance"]
+        .as_str()
+        .or_else(|| e.body["instance"].as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// 인스턴스 id → 봇 이름. 대화 이벤트와 살아 있는 인스턴스에서 모은다.
+pub fn bot_map(
+    events: &[EventRow],
+    live: &[crate::board::Instance],
+) -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    for e in events {
+        if let (Some(i), Some(b)) = (speaker_of(e), e.body["bot"].as_str()) {
+            if !b.is_empty() {
+                m.insert(i, b.to_string());
+            }
+        }
+    }
+    for i in live {
+        if !i.bot.is_empty() {
+            m.entry(i.id.clone()).or_insert_with(|| i.bot.clone());
+        }
+    }
+    m
+}
+
+/// 봇 이름 찾기: 이벤트에 적힌 bot → 지도 → id 앞글자(o-=오케스트레이터, w-=워커).
+pub fn bot_of(e: &EventRow, map: &std::collections::HashMap<String, String>) -> String {
+    if let Some(b) = e.body["bot"].as_str().filter(|b| !b.is_empty()) {
+        return b.to_string();
+    }
+    if e.body["actor"]["role"].as_str() == Some("orchestrator") {
+        return "orchestrator".into();
+    }
+    let Some(i) = speaker_of(e) else {
+        return String::new();
+    };
+    if let Some(b) = map.get(&i) {
+        return b.clone();
+    }
+    if i.starts_with("o-") {
+        "orchestrator".into()
+    } else if i.starts_with("w-") {
+        "worker".into()
+    } else {
+        String::new()
+    }
+}
+
+/// 봇 말 묶음 안의 한 줄.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatEntry {
+    /// 봇의 말.
+    Text { seq: u64, text: String },
+    /// 이어진 도구 호출(접어서 보인다).
+    Tools { first_seq: u64, lines: Vec<String> },
+    /// 권한 요청·질문·보고처럼 사람이 볼 구조화 메시지.
+    Notice {
+        seq: u64,
+        kind: String,
+        head: String,
+        text: String,
+        tone: &'static str,
+    },
+    /// 턴 끝(토큰·비용).
+    TurnEnd { text: String, tone: &'static str },
+}
+
+/// 채팅 한 칸.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatRow {
+    Human {
+        seq: u64,
+        ts: u64,
+        text: String,
+    },
+    Bot {
+        instance: String,
+        bot: String,
+        ts: u64,
+        entries: Vec<ChatEntry>,
+    },
+    System {
+        seq: u64,
+        text: String,
+        tone: &'static str,
+    },
+}
+
+/// 스레드 이벤트를 채팅 칸으로 묶는다. 같은 봇이 이어 말하면 한 묶음이 된다.
+pub fn chat_rows(
+    events: &[EventRow],
+    map: &std::collections::HashMap<String, String>,
+) -> Vec<ChatRow> {
+    let mut out: Vec<ChatRow> = vec![];
+    for e in events {
+        let it = thread_item(e);
+        if it.bubble == Bubble::Human {
+            out.push(ChatRow::Human {
+                seq: e.seq,
+                ts: e.ts,
+                text: it.text,
+            });
+            continue;
+        }
+        let who = speaker_of(e);
+        let speaking = matches!(it.bubble, Bubble::Agent | Bubble::Tool | Bubble::Notice)
+            || e.kind == "instance.turn_end"
+            || e.kind == "instance.turn_error";
+        let Some(inst) = who.filter(|_| speaking) else {
+            out.push(ChatRow::System {
+                seq: e.seq,
+                text: it.text,
+                tone: it.tone,
+            });
+            continue;
+        };
+        let entry = match (it.bubble, e.kind.as_str()) {
+            (Bubble::Agent, _) => ChatEntry::Text {
+                seq: e.seq,
+                text: it.text,
+            },
+            (Bubble::Tool, _) => ChatEntry::Tools {
+                first_seq: e.seq,
+                lines: vec![it.text],
+            },
+            (_, "instance.turn_end") | (_, "instance.turn_error") => ChatEntry::TurnEnd {
+                text: it.text,
+                tone: it.tone,
+            },
+            _ => ChatEntry::Notice {
+                seq: e.seq,
+                kind: e.kind.clone(),
+                // 누가 했는지는 묶음 머리가 이미 말한다.
+                head: it.head.split(" · ").next().unwrap_or("").to_string(),
+                text: it.text,
+                tone: it.tone,
+            },
+        };
+        // 같은 봇이 이어 말하면 앞 묶음에 붙인다.
+        if let Some(ChatRow::Bot {
+            instance, entries, ..
+        }) = out.last_mut()
+        {
+            if *instance == inst {
+                match (entries.last_mut(), entry) {
+                    (Some(ChatEntry::Tools { lines, .. }), ChatEntry::Tools { lines: l2, .. }) => {
+                        lines.extend(l2)
+                    }
+                    (_, en) => entries.push(en),
+                }
+                continue;
+            }
+        }
+        if matches!(entry, ChatEntry::TurnEnd { .. }) {
+            // 말 없이 턴만 끝난 것은 시스템 줄로.
+            if let ChatEntry::TurnEnd { text, tone } = entry {
+                out.push(ChatRow::System {
+                    seq: e.seq,
+                    text,
+                    tone,
+                });
+            }
+            continue;
+        }
+        out.push(ChatRow::Bot {
+            bot: bot_of(e, map),
+            instance: inst,
+            ts: e.ts,
+            entries: vec![entry],
+        });
+    }
+    out
+}
+
+/// 카드 대화의 참여 봇: 지금 떠 있는 봇과 대화에 말한 적 있는 봇(봇 이름당 하나).
+/// 떠 있는 봇이 앞, 그다음은 마지막으로 말한 순서.
+pub fn card_members(
+    events: &[EventRow],
+    live: &[crate::board::Instance],
+    card: &str,
+) -> Vec<(String, Option<crate::board::Instance>)> {
+    let mut out: Vec<(String, Option<crate::board::Instance>)> = vec![];
+    for i in live
+        .iter()
+        .filter(|i| i.card.as_deref() == Some(card) && i.role != "orchestrator")
+    {
+        if !out.iter().any(|(b, _)| b == &i.bot) {
+            out.push((i.bot.clone(), Some(i.clone())));
+        }
+    }
+    let map = bot_map(events, live);
+    let mut spoke: Vec<String> = vec![];
+    for e in events.iter().rev() {
+        if speaker_of(e).is_none() {
+            continue;
+        }
+        let b = bot_of(e, &map);
+        if b.is_empty() || b == "orchestrator" || spoke.contains(&b) {
+            continue;
+        }
+        spoke.push(b);
+    }
+    for b in spoke {
+        if !out.iter().any(|(x, _)| x == &b) {
+            out.push((b, None));
+        }
+    }
+    out
+}
+
+/// 대화 목록 미리보기: (누가, 무엇).
+pub fn chat_preview(e: &EventRow) -> (String, String) {
+    let it = thread_item(e);
+    if e.kind == "msg.human" {
+        return ("나".into(), short(&it.text, 120));
+    }
+    let who = bot_look(&bot_of(e, &Default::default())).name;
+    let text = match e.kind.as_str() {
+        "instance.output" => it.text,
+        _ if it.head.is_empty() => it.text,
+        _ => format!(
+            "{} · {}",
+            it.head.split(" · ").next().unwrap_or(""),
+            it.text
+        ),
+    };
+    (who, short(&text, 120))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,6 +1051,7 @@ mod tests {
             project: path.split('/').nth(1).unwrap_or("").into(),
             stage: stage.into(),
             status: status.into(),
+            last: None,
         }
     }
 
@@ -970,5 +1255,111 @@ mod tests {
             assert!(d.contains("?? b.txt"), "{d}");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn row(seq: u64, kind: &str, body: serde_json::Value) -> EventRow {
+        EventRow {
+            seq,
+            ts: seq * 1000,
+            topic: "project/p/card/c".into(),
+            kind: kind.into(),
+            body,
+        }
+    }
+
+    #[test]
+    fn chat_groups_by_speaker_and_folds_tools() {
+        use serde_json::json;
+        let me = json!({"instance": "w-01"});
+        let evs = vec![
+            row(
+                1,
+                "instance.started",
+                json!({"instance":"w-01","bot":"reviewer"}),
+            ),
+            row(2, "msg.human", json!({"text":"봐 줘"})),
+            row(
+                3,
+                "instance.output",
+                json!({"instance":"w-01","text":"읽겠습니다"}),
+            ),
+            row(
+                4,
+                "instance.tool_use",
+                json!({"instance":"w-01","tool":"Read","input":{"file_path":"a.rs"}}),
+            ),
+            row(
+                5,
+                "instance.tool_use",
+                json!({"instance":"w-01","tool":"Grep","input":{"pattern":"x"}}),
+            ),
+            row(
+                6,
+                "instance.output",
+                json!({"instance":"w-01","text":"괜찮습니다"}),
+            ),
+            row(7, "instance.turn_end", json!({"instance":"w-01","turn":1})),
+            row(8, "msg.ask", json!({"actor": me, "question":"계속할까요?"})),
+        ];
+        let map = bot_map(&evs, &[]);
+        let rows = chat_rows(&evs, &map);
+        assert!(matches!(rows[0], ChatRow::System { .. }));
+        assert!(matches!(rows[1], ChatRow::Human { .. }));
+        let ChatRow::Bot { bot, entries, .. } = &rows[2] else {
+            panic!("{rows:?}")
+        };
+        assert_eq!(bot, "reviewer");
+        assert_eq!(entries.len(), 5, "{entries:?}");
+        assert!(matches!(&entries[1], ChatEntry::Tools { lines, .. } if lines.len() == 2));
+        assert!(matches!(entries[3], ChatEntry::TurnEnd { .. }));
+        assert!(matches!(entries[4], ChatEntry::Notice { .. }));
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn bot_looks_are_distinct() {
+        assert_ne!(bot_look("worker").color, bot_look("reviewer").color);
+        assert_eq!(bot_look("orchestrator").name, "오케스트레이터");
+        assert_eq!(bot_look("docs").glyph, "D");
+        let (who, text) = chat_preview(&row(
+            1,
+            "instance.output",
+            serde_json::json!({"instance":"w-1","bot":"worker","text":"원인을\n찾았습니다"}),
+        ));
+        assert_eq!(who, "워커");
+        assert_eq!(text, "원인을 찾았습니다");
+    }
+
+    #[test]
+    fn members_include_bots_that_spoke() {
+        use serde_json::json;
+        let evs = vec![
+            row(
+                1,
+                "instance.output",
+                json!({"instance":"w-a","bot":"worker","text":"a"}),
+            ),
+            row(
+                2,
+                "instance.output",
+                json!({"instance":"w-b","bot":"reviewer","text":"b"}),
+            ),
+            row(
+                3,
+                "instance.output",
+                json!({"instance":"w-c","bot":"worker","text":"c"}),
+            ),
+        ];
+        let live = vec![crate::board::Instance {
+            id: "w-d".into(),
+            role: "worker".into(),
+            bot: "researcher".into(),
+            card: Some("work/p/c".into()),
+            ..Default::default()
+        }];
+        let m = card_members(&evs, &live, "work/p/c");
+        let names: Vec<&str> = m.iter().map(|(b, _)| b.as_str()).collect();
+        assert_eq!(names, vec!["researcher", "worker", "reviewer"]);
+        assert!(m[0].1.is_some() && m[1].1.is_none());
     }
 }
