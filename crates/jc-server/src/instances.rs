@@ -1036,14 +1036,14 @@ async fn run_instance(
                                             if !text.trim().is_empty() {
                                                 last_text = Some(text.clone());
                                                 emit(&store_cmd, vec![NewEvent::new(topic.clone(), "instance.output",
-                                                    json!({"instance":spec.id,"kind":"text","text":text}))]);
+                                                    json!({"instance":spec.id,"bot":spec.bot.name,"kind":"text","text":text}))]);
                                             }
                                         }
                                         AssistantBlock::ToolUse { name, input, .. } => {
                                             saw_tool_in_turn = true;
                                             if name.contains("report") { last_report_in_turn = true; }
                                             emit(&store_cmd, vec![NewEvent::new(topic.clone(), "instance.tool_use",
-                                                json!({"instance":spec.id,"tool":name,"input":input}))]);
+                                                json!({"instance":spec.id,"bot":spec.bot.name,"tool":name,"input":input}))]);
                                         }
                                         _ => {}
                                     }

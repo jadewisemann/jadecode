@@ -1010,6 +1010,7 @@ fn card_rows(sh: &Shared) -> Result<Vec<CardRow>, Error> {
 fn cards_list(sh: &Shared, params: &Value) -> Result<Value, Error> {
     let project = params.get("project").and_then(|v| v.as_str());
     let stage = params.get("stage").and_then(|v| v.as_str());
+    let conn = index::open_index_ro(&sh.root).ok();
     let rows: Vec<Value> = card_rows(sh)?
         .into_iter()
         .filter(|r| {
@@ -1019,8 +1020,13 @@ fn cards_list(sh: &Shared, params: &Value) -> Result<Value, Error> {
         })
         .filter(|r| stage.map(|s| r.stage == s).unwrap_or(true))
         .map(|r| {
+            let last = conn
+                .as_ref()
+                .and_then(|c| index::last_chat_line(c, &card_topic(&r.path)).ok().flatten())
+                .and_then(|l| serde_json::from_str::<Value>(&l).ok())
+                .map(|v| json!({"seq":v["seq"],"ts":v["ts"],"topic":v["topic"],"kind":v["kind"],"body":v["body"]}));
             json!({"path":r.path,"id":r.id,"title":r.title,"project":r.project,
-                   "stage":r.stage,"status":r.status})
+                   "stage":r.stage,"status":r.status,"last":last})
         })
         .collect();
     Ok(json!({"cards": rows, "head_seq": *sh.head.borrow()}))
