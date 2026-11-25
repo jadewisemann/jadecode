@@ -1031,6 +1031,31 @@ pub fn chat_preview(e: &EventRow) -> (String, String) {
     (who, short(&text, 120))
 }
 
+/// SVG 안의 `#RRGGBB` 색을 `#BBGGRR`로 바꾼다.
+///
+/// gpui 0.2.2는 SVG 그림을 RGBA 그대로 BGRA 텍스처에 올려 빨강과 파랑이 뒤바뀐다
+/// (PNG·GIF는 바꿔 주는데 SVG만 빠졌다). 미리 뒤집어 두면 제 색으로 보인다.
+pub fn swap_red_blue(svg: &[u8]) -> Vec<u8> {
+    let mut out = svg.to_vec();
+    let mut i = 0;
+    while i + 7 <= out.len() {
+        if out[i] == b'#' && out[i + 1..i + 7].iter().all(|c| c.is_ascii_hexdigit()) {
+            let end_ok = out
+                .get(i + 7)
+                .map(|c| !c.is_ascii_hexdigit())
+                .unwrap_or(true);
+            if end_ok {
+                out.swap(i + 1, i + 5);
+                out.swap(i + 2, i + 6);
+                i += 7;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1365,5 +1390,15 @@ mod tests {
         let names: Vec<&str> = m.iter().map(|(b, _)| b.as_str()).collect();
         assert_eq!(names, vec!["researcher", "worker", "reviewer"]);
         assert!(m[0].1.is_some() && m[1].1.is_none());
+    }
+
+    #[test]
+    fn svg_colors_swap_red_and_blue() {
+        let s = br##"<a fill="#6e98ff" b="#fff" c="url(#g-x)" d="#12345678"/>"##;
+        let out = String::from_utf8(swap_red_blue(s)).unwrap();
+        assert!(out.contains("#ff986e"), "{out}");
+        assert!(out.contains("#fff\""));
+        assert!(out.contains("#g-x"));
+        assert!(out.contains("#12345678"));
     }
 }

@@ -986,7 +986,7 @@ fn bot_image(bot: &str) -> Arc<gpui::Image> {
         .or_insert_with(|| {
             Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Svg,
-                bytes.to_vec(),
+                vm::swap_red_blue(bytes),
             ))
         })
         .clone()
