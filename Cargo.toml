@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/jc-core", "crates/jc-driver", "crates/jc-mcp", "crates/jc-server", "crates/jc-client", "crates/jc-bench", "crates/jadecode-cli"]
+members = ["crates/jc-core", "crates/jc-client", "crates/jadecode-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,21 +11,10 @@ license = "MIT"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
 toml = "0.9"
 sha2 = "0.10"
-rand = "0.9"
 libc = "0.2"
-rusqlite = { version = "0.41", features = ["bundled"] }
-notify = "8"
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.30"
-futures-util = "0.3"
 jc-core = { path = "crates/jc-core" }
-jc-server = { path = "crates/jc-server" }
-jc-driver = { path = "crates/jc-driver" }
-jc-mcp = { path = "crates/jc-mcp" }
-jc-client = { path = "crates/jc-client" }
 
 [profile.release]
 # 배포 바이너리를 가볍게. 스택 트레이스가 필요하면 `--profile release-debug`를 쓴다.

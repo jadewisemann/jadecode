@@ -81,19 +81,12 @@ def main():
 
   app "jadecode.app"
 
-  # 서버·CLI 는 앱 번들 안에 있지만, 터미널에서 쓰려면 심볼릭 링크를 두는 편이 낫다.
+  # CLI 는 앱 번들 안에 있지만, 터미널에서 쓰려면 심볼릭 링크를 두는 편이 낫다.
   binary "#{{appdir}}/jadecode.app/Contents/MacOS/jadecode"
-  binary "#{{appdir}}/jadecode.app/Contents/MacOS/jadecode-mcp"
 
   caveats <<~EOS
-    앱을 열기 전에 서버가 필요합니다(앱이 없으면 자동으로 띄웁니다):
-
-      jadecode run --open
-
     워크스페이스 기본 위치: ~/jc/work
-    에이전트(claude·opencode·omp·pi)는 각자 설치·로그인이 필요합니다:
-
-      jadecode agents
+    Claude Code(claude)가 설치·로그인돼 있어야 합니다.
   EOS
 end
 '''

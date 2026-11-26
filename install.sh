@@ -95,7 +95,7 @@ src="$TMP/$name"
 
 # ---------- 바이너리 ----------
 mkdir -p "$PREFIX"
-for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+for b in jadecode jadecode-client; do
   [ -f "$src/$b" ] || continue
   cp "$src/$b" "$PREFIX/$b"
   chmod +x "$PREFIX/$b"
@@ -125,7 +125,7 @@ if [ "$os" = "macos" ] && [ "${JADECODE_NO_APP:-0}" != "1" ] && [ -d "$src/jadec
     dest="$src/jadecode.app"
   fi
   if have xattr; then
-    for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+    for b in jadecode jadecode-client; do
       [ -f "$PREFIX/$b" ] && xattr -dr com.apple.quarantine "$PREFIX/$b" 2>/dev/null || true
     done
   fi
@@ -133,16 +133,7 @@ fi
 
 # ---------- 워크스페이스 ----------
 if [ "${JADECODE_NO_WS:-0}" != "1" ]; then
-  if [ ! -f "$WS/jadecode.toml" ]; then
-    mkdir -p "$(dirname "$WS")"
-    if "$PREFIX/jadecode" init "$WS" --name "$(basename "$WS")" >/dev/null 2>&1; then
-      say "워크스페이스 생성: $WS"
-    else
-      say "  워크스페이스 생성 실패. 나중에 직접: $PREFIX/jadecode init $WS"
-    fi
-  else
-    say "워크스페이스 있음: $WS"
-  fi
+  mkdir -p "$WS" && say "워크스페이스: $WS"
 fi
 
 # ---------- 다음 ----------
@@ -152,7 +143,7 @@ say "  export PATH=\"$PREFIX:\$PATH\""
 if [ "$os" = "macos" ] && [ -d "/Applications/jadecode.app" ]; then
   say "  open /Applications/jadecode.app"
 else
-  say "  jadecode-client            # GUI (서버가 없으면 앱이 로컬 백엔드를 띄운다)"
+  say "  jadecode-client"
 fi
 say ""
-say "에이전트(claude·opencode·omp·pi)는 각자 설치·로그인이 필요하다: jadecode agents"
+say "Claude Code(claude)가 설치·로그인돼 있어야 한다: https://docs.claude.com/claude-code"

@@ -31,7 +31,7 @@ say "대상: $APP"
 # 1) 격리 표시 제거 (앱 전체 + 설치된 CLI 바이너리)
 say "[1/4] 격리 표시 제거"
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
-for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+for b in jadecode jadecode-client; do
   p="$HOME/.local/bin/$b"
   [ -f "$p" ] && xattr -dr com.apple.quarantine "$p" 2>/dev/null || true
 done

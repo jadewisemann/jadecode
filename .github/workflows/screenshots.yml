@@ -29,16 +29,14 @@ jobs:
       - name: demo workspace
         run: |
           set -euo pipefail
-          BIN="$PWD/target/release"
           WS="$RUNNER_TEMP/jcw/ws"
-          mkdir -p "$(dirname "$WS")"
-          "$BIN/jadecode" init "$WS" --name demo
-          cd "$WS"
-          JADECODE_NO_CONNECTORS=1 "$BIN/jadecode" server > "$RUNNER_TEMP/server.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/server.pid"
-          for i in $(seq 1 50); do [ -S .jadecode/jadecode.sock ] && break; sleep 0.2; done
-          python3 "$GITHUB_WORKSPACE/tools/demo-seed.py" "$WS" "$BIN/jadecode"
+          python3 "$GITHUB_WORKSPACE/tools/demo-seed.py" "$WS"
+          # 진짜 claude 대신 계속 일하는 척하는 가짜(진행 중 화면용).
+          FAKE="$RUNNER_TEMP/fake-claude"
+          printf '#!/bin/sh\ncat >/dev/null\nsleep 600\n' > "$FAKE"
+          chmod +x "$FAKE"
           echo "WS=$WS" >> "$GITHUB_ENV"
+          echo "JADECODE_CLAUDE=$FAKE" >> "$GITHUB_ENV"
       - name: shots
         run: |
           set -euo pipefail
@@ -46,15 +44,13 @@ jobs:
           rm -rf "$OUT"; mkdir -p "$OUT"
           # 첫 실행 화면(빈 워크스페이스)
           EMPTY="$RUNNER_TEMP/jcw/empty"
-          ./target/release/jadecode init "$EMPTY" --name empty
-          JADECODE_SHOTS="$RUNNER_TEMP/empty-shots" JADECODE_NO_CONNECTORS=1 \
-            perl -e 'alarm shift; exec @ARGV' 120 ./target/release/jadecode-client "$EMPTY" || true
-          cp "$RUNNER_TEMP/empty-shots/01-board-list.png" "$OUT/00-welcome.png" || true
-          # 데모 워크스페이스(떠 있는 서버에 붙는다)
-          JADECODE_SHOTS="$OUT" perl -e 'alarm shift; exec @ARGV' 180 ./target/release/jadecode-client "$WS" || true
+          mkdir -p "$EMPTY"
+          JADECODE_SHOTS="$RUNNER_TEMP/empty-shots" \
+            perl -e 'alarm shift; exec @ARGV' 90 ./target/release/jadecode-client "$EMPTY" || true
+          cp "$RUNNER_TEMP/empty-shots/01-board-bot.png" "$OUT/00-welcome.png" || true
+          JADECODE_SHOTS="$OUT" perl -e 'alarm shift; exec @ARGV' 120 ./target/release/jadecode-client "$WS" || true
           ls -la "$OUT"
-          kill "$(cat "$RUNNER_TEMP/server.pid")" || true
-          tail -50 "$RUNNER_TEMP/server.log" || true
+          ./target/release/jadecode ls shop --ws "$WS"
       - name: commit
         run: |
           set -euo pipefail

@@ -48,8 +48,8 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DIR="jadecode-${TAG}-linux-x86_64"
           mkdir -p "$DIR"
-          cp target/release/jadecode target/release/jadecode-mcp \
-             target/release/jadecode-client target/release/jc-bench "$DIR"/
+          cp target/release/jadecode \
+             target/release/jadecode-client "$DIR"/
           cp README.md SPEC.md "$DIR"/
           cp -r docs "$DIR"/
           cat > "$DIR/install.sh" <<'EOF'
@@ -59,13 +59,13 @@ jobs:
           HERE=$(cd "$(dirname "$0")" && pwd)
           DEST="${JADECODE_PREFIX:-$HOME/.local/bin}"
           mkdir -p "$DEST"
-          for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+          for b in jadecode jadecode-client; do
             cp "$HERE/$b" "$DEST/$b"
             chmod +x "$DEST/$b"
             echo "installed $DEST/$b"
           done
           echo
-          echo "다음: jadecode init ~/jc/work && cd ~/jc/work && jadecode server"
+          echo "다음: jadecode-client  (워크스페이스는 ~/jc/work)"
           EOF
           chmod +x "$DIR/install.sh"
           # 실행에 필요한 공유 라이브러리 목록을 남긴다(배포판마다 이름이 다르다).
@@ -104,8 +104,8 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DIR="jadecode-${TAG}-macos-aarch64"
           mkdir -p "$DIR"
-          cp target/release/jadecode target/release/jadecode-mcp \
-             target/release/jadecode-client target/release/jc-bench "$DIR"/
+          cp target/release/jadecode \
+             target/release/jadecode-client "$DIR"/
           cp README.md SPEC.md "$DIR"/
           cp -r docs "$DIR"/
           # 앱 번들(.app). 태그 v0.1.0 → CFBundleShortVersionString 0.1.0.
@@ -117,7 +117,7 @@ jobs:
           HERE=$(cd "$(dirname "$0")" && pwd)
           DEST="${JADECODE_PREFIX:-$HOME/.local/bin}"
           mkdir -p "$DEST"
-          for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+          for b in jadecode jadecode-client; do
             cp "$HERE/$b" "$DEST/$b"
             chmod +x "$DEST/$b"
             echo "installed $DEST/$b"
@@ -137,12 +137,12 @@ jobs:
             echo
             echo "참고: 이 빌드는 코드서명·공증이 없어 첫 실행에서 Gatekeeper 경고가 뜬다."
             echo "      무시하고 열려면(본인용 빌드):"
-            echo "        xattr -dr com.apple.quarantine \"$DEST/jadecode\" \"$DEST/jadecode-mcp\" \"$DEST/jadecode-client\""
+            echo "        xattr -dr com.apple.quarantine \"$DEST/jadecode\" \"$DEST/jadecode-client\""
             [ -d /Applications/jadecode.app ] && echo "        xattr -dr com.apple.quarantine /Applications/jadecode.app"
             echo "      또는 Finder 에서 우클릭 → 열기, 또는 시스템 설정 → 개인정보 보호 및 보안 → \"그래도 열기\""
           fi
           echo
-          echo "다음: open /Applications/jadecode.app (서버가 없으면 앱이 로컬 백엔드를 띄운다)"
+          echo "다음: open /Applications/jadecode.app"
           EOF
           chmod +x "$DIR/install.sh"
           # .app 은 디렉터리다. tar.gz 는 실행 권한·심볼릭 링크를 그대로 보존하므로
@@ -276,22 +276,18 @@ jobs:
 
             ## 첫 실행
 
-            앱을 열면 됩니다. 떠 있는 서버가 없으면 앱이 안에서 로컬 백엔드를 띄우고,
-            워크스페이스가 없으면 `~/jc/work`를 만듭니다.
+            앱을 열면 됩니다. 워크스페이스가 없으면 `~/jc/work`를 만듭니다.
+            프로젝트를 만들고 봇에게 할 일을 말하면, 봇이 칸반에 md 메모를 쓰고
+            진행 중으로 옮긴 메모는 Claude Code가 전용 브랜치에서 작업합니다.
 
             ```sh
-            open /Applications/jadecode.app        # 보드 창
-            ```
-
-            ```sh
-            jadecode project add api
-            jadecode card add "첫 카드" --project api --path implement,verify
-            jadecode agents                        # claude·opencode·omp·pi 설치 확인
+            open /Applications/jadecode.app        # 앱
+            jadecode ls                            # 터미널에서 보드 보기
             ```
 
             ## 요구 사항
 
-            - **에이전트**: `claude`, `opencode`, `omp`, `pi` 중 설치된 것(각자 로그인/API 키)
+            - **Claude Code**: `claude`가 설치·로그인돼 있어야 합니다.
             - **리눅스 클라이언트**: X11 또는 Wayland + Vulkan 드라이버. `REQUIRES.txt`(리눅스 아카이브)에
               필요한 공유 라이브러리를 적어 두었다.
             - **macOS 클라이언트**: macOS 14 이상, Apple Silicon

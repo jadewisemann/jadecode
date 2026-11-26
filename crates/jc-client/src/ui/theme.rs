@@ -22,32 +22,11 @@ pub const HUMAN_BUBBLE: u32 = 0x3557b7;
 
 pub const MONO: &str = "Menlo";
 
-pub fn status_color(status: &str) -> u32 {
-    match status {
-        "working" => ACCENT,
-        "blocked" => RED,
-        "waiting_human" => AMBER,
-        "done" => GREEN,
-        "failed" => RED,
-        _ => FAINT,
-    }
-}
-
-pub fn tone_color(tone: &str) -> u32 {
-    match tone {
-        "ok" => GREEN,
-        "warn" => AMBER,
-        "err" => RED,
-        "info" => ACCENT,
-        _ => MUTED,
-    }
-}
-
-pub fn instance_color(state: &str) -> u32 {
-    match state {
-        "busy" => ACCENT,
-        "starting" => AMBER,
-        "idle" => GREEN,
-        _ => FAINT,
+pub fn column_color(c: jc_core::Column) -> u32 {
+    match c {
+        jc_core::Column::Todo => MUTED,
+        jc_core::Column::Doing => ACCENT,
+        jc_core::Column::Review => AMBER,
+        jc_core::Column::Done => GREEN,
     }
 }

@@ -1,12 +1,41 @@
 # jadecode
 
-오케스트레이터 봇이 카드를 발행·이동하고, 봇 인스턴스가 카드에서 일하는 task 기반 칸반.
+프로젝트마다 봇과 대화하고, 할 일은 칸반의 **md 메모**로 남기고, 메모는 Claude Code가 전용 브랜치에서 처리한다.
+채팅 봇(바깥 루프)과 코딩 에이전트(안쪽 루프)를 한 창에서 잇는 것이 전부다.
 
-- 무엇을 하는가: [`SPEC.md`](SPEC.md)
-- 무엇으로 만드는가: [`docs/architecture/`](docs/architecture/) (후보 비교, 스파이크 결과, 질문 목록)
-- 지금 어디까지: [`docs/implementation.md`](docs/implementation.md)
+![보드와 봇 대화](docs/screenshots/latest/01-board-bot.png)
 
-서버 · 네 에이전트 백엔드(Claude Code·OpenCode·omp·pi) · MCP 메시지 도구 · CLI · **GPUI 데스크톱 클라이언트**까지 들어 있다.
+## 어떻게 동작하나
+
+```text
+<워크스페이스>/                 기본 ~/jc/work
+  <프로젝트>/
+    project.toml               name, repo(코드 레포 경로)
+    todo/  doing/  review/  done/     ← 칸반 열 = 폴더
+      safari-login.md          ← 메모 = 작업 하나. 내용이 곧 맥락
+  .jadecode/<프로젝트>/         세션 id·대화 기록·워크트리(사람이 볼 필요 없음)
+```
+
+1. **프로젝트 봇과 대화한다.** 프로젝트마다 대화가 하나 있다(Claude 프로젝트처럼). 봇은 레포를 읽을 수 있고,
+   일을 맡길 때는 보드 폴더에 md 메모를 쓴다. 봇은 코드를 직접 고치지 않는다.
+2. **메모가 `doing/`에 들어가면 시작한다.** 앱이 레포에 브랜치 `jc/<메모 이름>`과 전용 워크트리를 열고,
+   메모 내용을 첫 메시지로 Claude Code를 실행한다. 사람의 작업 폴더는 건드리지 않는다.
+3. **턴이 끝나면 `review/`로 옮긴다.** 메모를 열어 에이전트에게 더 말하면 다시 `doing/`으로 가서 같은 세션을 잇는다.
+   "PR 만들기"는 에이전트에게 push와 Draft PR을 부탁하는 말이다.
+4. **`done/`으로 옮기면 끝.** 커밋하지 않은 변경이 없으면 워크트리를 정리한다(브랜치는 남는다).
+5. 끝난 소식은 봇의 다음 턴 앞에 `[보드 소식]`으로 붙는다. 봇이 따로 깨어나지는 않는다.
+
+메모는 그냥 파일이므로 편집기·Finder·`mv`로 고치거나 옮겨도 된다. 앱은 1초 안에 반영한다.
+칸반 타일을 끌어서 열을 옮길 수도 있다.
+
+### 실행 방식
+
+- 턴마다 `claude -p --output-format stream-json`을 새로 띄운다. 첫 턴은 `--session-id`, 이후는 `--resume`이다.
+  상주 프로세스가 없으므로 앱을 다시 켜도 대화가 이어진다(앱이 꺼질 때 돌던 메모는 `review/`로 옮겨 둔다).
+- 봇: 보드 폴더에서 `--permission-mode acceptEdits`, 읽기 도구와 `mv`·`git log` 같은 몇 개 명령만 허용한다.
+- 메모 작업: 워크트리에서 `--permission-mode bypassPermissions`(묻지 않고 일한다). `project.toml`의
+  `permission_mode`로 바꿀 수 있다. `model`도 같은 곳에서 정한다.
+- 사용자 자신의 Claude Code 설정(CLAUDE.md, MCP 등)은 그대로 쓴다.
 
 ## 설치
 
@@ -50,9 +79,7 @@ open /Applications/jadecode.app
 
 Finder에서 우클릭 → 열기도 됩니다.
 
-서버를 따로 띄울 필요는 없습니다. 앱을 열면 떠 있는 서버에 먼저 붙고, 없으면 **앱 안에서 로컬
-백엔드를 직접 띄웁니다**. 워크스페이스가 없으면 `~/jc/work`를 만들어 씁니다. 앱 번들에
-`jadecode`·`jadecode-mcp`가 들어 있어서 에이전트 인스턴스도 앱만으로 동작합니다.
+워크스페이스가 없으면 앱이 `~/jc/work`를 만들어 씁니다. 앱 번들 안에 명령줄 도구 `jadecode`도 들어 있습니다.
 
 ### 한 줄 (전 플랫폼)
 
@@ -61,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/jadewisemann/jadecode/main/install.
 ```
 
 하는 일: 최신 릴리즈 내려받기 → **체크섬 검증** → `~/.local/bin`에 바이너리 →
-macOS면 `/Applications/jadecode.app` 설치 + quarantine 해제 → `~/jc/work` 워크스페이스 생성.
+macOS면 `/Applications/jadecode.app` 설치 + quarantine 해제 → `~/jc/work` 폴더 생성.
 
 옵션(환경변수):
 
@@ -96,163 +123,42 @@ xattr -dr com.apple.quarantine /Applications/jadecode.app
 
 또는 Finder에서 우클릭 → 열기, 또는 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기".
 
-## 처음 실행
+## 쓰기
 
 ```sh
-open /Applications/jadecode.app    # macOS 앱 (또는 jadecode-client)
+open /Applications/jadecode.app       # 또는 jadecode-client [워크스페이스]
 ```
 
-앱은 이렇게 백엔드를 고른다.
+앱에서 **새 프로젝트** → 이름과 코드 레포 폴더를 고른다 → 오른쪽 봇에게 할 일을 말한다.
+단축키: `⌘N` 새 메모, `⇧⌘N` 새 프로젝트, `⌘K` 입력칸, `Esc` 메모 닫기, `⌘R` 새로고침.
 
-1. 워크스페이스: 인자 → `JADECODE_WORKSPACE` → 현재 폴더에서 위로 → `~/jc/work`(없으면 만든다).
-2. 그 워크스페이스의 서버(`jadecode server`)가 떠 있으면 거기 붙는다. 헤더 오른쪽에 `서버 연결`로 보인다.
-3. 없으면 같은 프로세스 안에서 로컬 백엔드(`jc-server`)를 띄우고 붙는다. 헤더에 `로컬 백엔드`로 보인다.
-   같은 소켓을 열기 때문에 앱이 켜져 있는 동안 CLI·MCP도 그대로 붙는다. 앱을 닫으면 함께 끝난다.
-4. 외부 서버만 쓰려면 `JADECODE_NO_EMBED=1`.
-
-앱을 닫아도 계속 돌아야 하면(에이전트를 밤새 돌릴 때 등) 서버를 따로 띄운다: `cd ~/jc/work && jadecode server &`.
-에이전트는 각자 설치·로그인이 필요하다:
+터미널에서도 같은 보드를 다룬다.
 
 ```sh
-jadecode agents     # claude·opencode·omp·pi 설치·버전 확인
+jadecode ls                                   # 프로젝트 목록
+jadecode ls shop                              # 보드
+jadecode new shop --repo ~/code/shop          # 프로젝트 만들기
+echo "목표: …" | jadecode memo shop "제목"     # 할 일 메모(본문은 표준 입력). --doing이면 바로 시작
+jadecode mv shop safari-login done
+jadecode update                               # 최신 릴리즈로 업데이트
 ```
 
-## 빠르게
+`claude`가 설치·로그인돼 있어야 한다. 다른 실행 파일을 쓰려면 `JADECODE_CLAUDE=/path/to/claude`.
+
+## 개발
 
 ```sh
-cargo test                                  # 69개
-cargo build
-
-J=target/debug/jadecode
-export JADECODE_MCP=$PWD/target/debug/jadecode-mcp   # 서버가 인스턴스에 붙일 MCP
-
-$J init ~/jc/acme --name Acme        # 봇 4개(orchestrator/worker/reviewer/researcher)와 policy/가 생긴다
-cd ~/jc/acme
-$J server &                          # .jadecode/jadecode.sock (0600). 쓰기 프로세스는 하나만(flock)
-                                     # 경로가 길면 자동으로 /tmp/jc-<이름>.sock 으로 물러난다(macOS 104자 한도)
-$J project add api
-$J card add "로그인 throttle" --project api --path implement,verify
-$J card list
-$J instance start worker --project api --card <카드 폴더 이름>
-$J instance list
-$J top                               # 단계별 보드
-$J tail --limit 10
-$J permission list                   # 사람 답을 기다리는 권한 요청
-$J permission allow 42 "merge ok"    # 그 요청 승인
-$J check                             # 일지·색인 전수 대조
-
-cargo build -p jc-client --features ui    # 클라이언트는 GPUI 기능을 켜서 빌드
-jadecode-client                      # GPUI 창(서버가 없으면 앱 안에서 로컬 백엔드를 띄운다)
-jadecode-client --dump               # 창 없이 보드 스냅숏 JSON
+cargo test --workspace                        # 코어 테스트(가짜 claude로 메모 한 바퀴)
+cargo build -p jc-client --features ui        # 앱(GPUI)
+IS_SANDBOX=1 cargo test -p jc-core --test live -- --ignored --nocapture   # 진짜 Claude Code로 끝까지(과금)
 ```
 
-실제 Claude Code로 끝까지 돌려 보려면(구독 로그인 필요, 과금):
-
-```sh
-./tools/e2e.sh haiku        # 카드 생성 → 워커 작업 → report(done) → 단계 이동
-./tools/wake.sh haiku       # 워커 이벤트 → 오케스트레이터 다이제스트 → ack
-./tools/full.sh haiku       # 사람 발주 → 오케스트레이터 → 카드·워커 → 보고 → 깨우기(전체)
-./tools/agents.sh           # 네 백엔드로 카드 하나씩(각 에이전트 로그인 필요)
-./tools/client.sh           # 클라이언트 스냅숏 + 창 생성 시험
-./tools/crash-test.sh 12 100  # kill -9 반복 복구
-JADECODE_LIVE=1 cargo test -p jc-driver --test live -- --test-threads=1   # 드라이버 계약
+```text
+crates/jc-core       워크스페이스·보드(md)·대화 기록·워크트리·claude 실행·엔진(화면 없이 시험)
+crates/jc-client     GPUI 앱: 프로젝트 목록 · 칸반 · 봇 대화 / 메모 작업
+crates/jadecode-cli  jadecode 명령(ls/new/memo/mv/update)
+tools/               앱 번들·DMG·설치 스크립트, 스크린샷용 데모 데이터
 ```
 
-## 구조
+스크린샷은 `claude/**` 브랜치에 push하면 macOS 러너가 찍어서 `docs/screenshots/latest/`에 커밋한다.
 
-```
-crates/jc-core      일지(정본)·색인(재생성 가능)·task.md·레이아웃·봇 스캐폴드
-crates/jc-driver    에이전트 백엔드: claude stream-json · ACP(opencode·omp) · pi RPC
-crates/jc-mcp       인스턴스용 MCP 서버(report/ask/propose/error, ack/send/reply, permission RPC)
-crates/jc-server    JSON-RPC over WebSocket, 쓰기 스레드, 구독, 감시, 인스턴스·권한·깨우기
-crates/jc-client    GPUI 데스크톱 클라이언트(보드·카드·대화·봇)
-crates/jadecode-cli `jadecode` 바이너리
-vendor/xattr        GPUI 빌드용 xattr 0.2 사본(최신 libc 호환 패치)
-crates/jc-bench     성능 측정(일지·색인·구독·클라이언트 데이터 계층)
-tools/              e2e.sh · wake.sh · full.sh · agents.sh · client.sh · crash-test.sh
-```
-
-## 에이전트 백엔드
-
-봇 정의(`bots/<name>/bot.toml`)의 `agent` 칸이 고른다.
-
-| agent | 구동 | jadecode 도구 |
-|---|---|---|
-| `claude` | `claude -p` stream-json | MCP |
-| `opencode` | `opencode acp` | ACP MCP |
-| `omp` | `omp acp` | ACP MCP |
-| `pi` | `pi --mode rpc` | **확장(extension)** — pi는 MCP를 지원하지 않는다 |
-
-```sh
-jadecode agents                                  # 설치·버전·MCP 지원 확인
-jadecode bot add fast --agent omp --model deepseek/deepseek-v4-flash
-jadecode instance start fast --project api --card <카드> --agent omp
-```
-
-워크스페이스 모양(파일이 정본이다):
-
-```
-<workspace>/
-  jadecode.toml
-  AGENTS.md
-  bots/<bot>/          bot.toml · instructions.md · memory/   (봇 정의)
-  policy/              policy.toml · permissions/<bot>.json   (사람만 정하는 값)
-  events/global.jsonl  봇·정책·전역
-  work/<project>/
-    project.toml
-    events.jsonl       프로젝트 일지(오케스트레이터 대화·카드 생성)
-    <card>/
-      task.md          앞머리 `jadecode:` 칸은 서버 소유, 본문은 누구나
-      events.jsonl     그 카드의 이벤트·메시지(덧붙이기만)
-  .jadecode/           색인·소켓·인스턴스 설정·복구 메모(정본 아님, 지워도 된다)
-```
-
-## 지키는 규칙
-
-스파이크(S1~S5, S9)가 실측으로 정한 것 중 코드가 지는 부분이다. 근거는 [`docs/architecture/candidates.md`](docs/architecture/candidates.md), [`docs/architecture/spike-results.md`](docs/architecture/spike-results.md).
-
-- **쓰기 순서**: 단일 쓰기 스레드가 seq 부여 → 일지 덧붙이기 → fsync → 색인 커밋 → 그 뒤 응답·알림. 응답받은 seq는 이미 fsync됐다.
-- **쓰기 프로세스는 하나**: 워크스페이스마다 `flock`. 서버가 돌면 CLI는 RPC로 우회한다.
-- **색인은 투영**: 지우거나 깨져도 일지와 `task.md`에서 다시 만든다.
-- **복구**: 찢긴 마지막 줄은 자르고 `.jadecode/recovery/torn.log`에 남긴다. seq 빈틈 뒤 줄은 미승인으로 `gap.log`로 옮긴다.
-- **`task.md` 동시 편집**: 서버 쓰기는 비교 후 맞바꾸기(`renameat2(RENAME_EXCHANGE)`). 바깥 편집이 앞머리 `jadecode:` 칸을 바꾸면 되돌리고 `card.state_change_rejected`. 본문 변경은 받아들이고 `card.file_changed`.
-- **구독**: 구독자별 버퍼가 없다. `from_seq` 뒤를 색인에서 읽어 보낸다. 주제는 마디 단위 앞부분 일치(`project/p1` ≠ `project/p10`).
-- **인스턴스**: 하나당 `claude` 프로세스 하나, 세션 id는 서버가 만든 UUID. 죽으면 같은 폴더에서 `--resume`. 시작 `init`에 MCP가 `connected`가 아니면 즉시 재시작.
-- **권한**: 정책은 `--settings`로 넣고, 규칙 밖은 `mcp__jadecode__permission` RPC로 온다. 사람 답 상한 25분(< CLI 1800초). 막힘은 `permission.*` 일지가 정본.
-- **깨우기**: 오케스트레이터에게 0.3초 모아 다이제스트 사용자 턴으로 넣는다. 도구 없는 턴의 자동 보고는 깨우지 않는다.
-
-## 성능
-
-`docs/performance.md`에 측정값과 병목을 적었다. 요약(카드 1,000·이벤트 10만, 이 컨테이너):
-
-- 색인 재생성 1.0초, 전수 검사 0.5초, 재시작 RSS 89MB
-- 덧붙이기 233/s(기본 fsync) → **507/s**(`--fsync batch-group`)
-- 클라이언트 스냅숏 복제 869us → **0.025us**(`SnapshotHandle`)
-
-```sh
-cargo build --release -p jc-bench
-jc-bench all /tmp/bench --projects 12 --cards 1000 --events 100000
-```
-
-**GPU 렌더 병목은 이 환경에서 못 잰다**(virtio GPU + llvmpipe, GPUI는 Vulkan 필요). Mac에서 재는 절차는
-`docs/performance.md` 끝에 있다.
-
-## RPC
-
-전송은 WebSocket(첫 버전은 유닉스 소켓 0600, `--port`로 루프백 TCP). `server.info`가 메서드 목록을 자기 서술한다.
-
-| 메서드 | 하는 일 |
-|---|---|
-| `server.info` / `server.stats` | 이름·메서드 목록 / 쓰기 묶음·seq·인스턴스·대기 권한 |
-| `projects.list` / `project.add` | 프로젝트 목록 / 만들기 |
-| `cards.list` `{project?, stage?}` | 카드 투영 목록 |
-| `card.add` `{project,title,path?,repos?}` | 카드 만들기(색인 등록까지) |
-| `card.get` `{card}` | `task.md` 원문 + 앞머리 + 색인 상태 |
-| `card.set_status` / `card.advance` | 상태 칸 / 다음 단계(끝이면 `4000 path_end`) |
-| `card.append_event` `{card,kind,body}` | 카드 일지에 메시지 |
-| `events.append` / `events.subscribe` / `events.head` / `events.tail` | 일지 쓰기·구독·머리·최근 |
-| `instances.list` / `instance.start` / `instance.send` / `instance.stop` | 봇 인스턴스 |
-| `permission.request` / `permission.resolve` | 권한 RPC(Claude Code가 부름) / 사람 답 |
-| `bots.list` / `policy.get` | 봇 정의 / 사람이 정한 값 |
-
-`card` 인자는 카드 폴더 이름, 상대 경로(`work/p/c`), ULID(앞부분) 중 아무거나 된다.
