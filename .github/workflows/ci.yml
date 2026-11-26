@@ -15,9 +15,9 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # 서버·CLI·벤치: 빠르고 GPU·시스템 라이브러리가 필요 없다.
-  server:
-    name: server (${{ matrix.os }})
+  # 코어·CLI: 빠르고 GPU·시스템 라이브러리가 필요 없다.
+  core:
+    name: core (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: server
+          key: core
       - name: build (client 제외)
         run: cargo build --workspace --exclude jc-client --bins
       - name: build (client 데이터 계층, GPUI 없이)

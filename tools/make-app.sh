@@ -203,9 +203,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$EXECUTABLE"
 chmod +x "$APP/Contents/MacOS/$EXECUTABLE"
 
-# CLI(서버·MCP)도 번들에 넣는다. 앱 하나만 설치해도 서버를 띄울 수 있게 하려는 것이다.
+# CLI(jadecode)도 번들에 넣는다. 앱만 설치해도 터미널에서 보드를 보고 업데이트할 수 있다.
 # 바이너리는 GUI 옆에 두되 MacOS/ 안에 넣어야 codesign --deep 이 함께 서명한다.
-for helper in jadecode jadecode-mcp; do
+for helper in jadecode; do
   # 실행 파일 옆에서 찾는다(릴리즈에서는 target/release 에 같이 있다).
   src=""
   for cand in "$(dirname "$BIN")/$helper" "$HERE/target/release/$helper" "$HERE/target/debug/$helper"; do
@@ -216,7 +216,7 @@ for helper in jadecode jadecode-mcp; do
     chmod +x "$APP/Contents/MacOS/$helper"
     echo "포함: $helper"
   else
-    echo "경고: $helper 를 찾지 못했다(앱에서 서버를 띄울 수 없다)"
+    echo "경고: $helper 를 찾지 못했다(앱 안에서 업데이트 명령을 쓸 수 없다)"
   fi
 done
 

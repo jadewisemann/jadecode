@@ -1025,7 +1025,7 @@ impl Element for TextElement {
                     window.paint_quad(cursor);
                 }
             }
-            self.input.update(cx, |input, cx| {
+            let width_changed = self.input.update(cx, |input, cx| {
                 let width_changed = input.multiline.is_some()
                     && input
                         .last_bounds
@@ -1037,7 +1037,12 @@ impl Element for TextElement {
                 if width_changed {
                     cx.notify();
                 }
+                width_changed
             });
+            // 처음 그린 프레임은 줄 수를 모르고 한 줄 높이로 잡는다. 다음 프레임을 꼭 다시 그리게 한다.
+            if width_changed {
+                window.refresh();
+            }
         });
     }
 }

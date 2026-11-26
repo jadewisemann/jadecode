@@ -1,200 +1,207 @@
-//! 워크스페이스 — 정본 파일의 뿌리.
+//! 워크스페이스와 프로젝트.
 //!
 //! ```text
-//! <workspace>/
-//!   jadecode.toml          # 워크스페이스 설정(이름, 기본 에이전트)
-//!   events/global.jsonl    # 봇·정책·전역 이벤트 일지
-//!   work/<project>/        # 프로젝트: project.toml + events.jsonl
-//!     <card>/              # 카드: task.md + events.jsonl + 레포별 워크트리
-//!   arxiv/<YYYY-MM>/       # 끝난 카드 문서
-//!   log/YYYY-MM-DD.md      # 오케스트레이터 일일 기록
-//!   .jadecode/             # 색인·세션·복구 메모(정본 아님)
+//! <ws>/
+//!   <project>/
+//!     project.toml          name, repo(코드 레포 경로), base(선택: 새 브랜치의 기준)
+//!     todo/  doing/  review/  done/   칸반 열. 그 안의 *.md 가 메모
+//!   .jadecode/<project>/    실행 상태(세션 id, 대화 기록, 워크트리). 사람이 볼 필요가 없다
 //! ```
 
-use crate::event::NewEvent;
-use crate::index;
-use crate::store::{Fsync, Store};
-use crate::taskmd::{card_state, CardState};
-use crate::topic::project_topic;
+use crate::board::Column;
 use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub root: PathBuf,
 }
 
-#[derive(Debug, Clone)]
-pub struct CardEntry {
-    pub rel: String,
-    pub state: CardState,
+/// `project.toml`에 적히는 값.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectFile {
+    pub name: String,
+    /// 코드 레포 폴더. 메모 작업은 여기서 워크트리를 연다.
+    #[serde(default)]
+    pub repo: String,
+    /// 새 브랜치를 만들 기준(비우면 레포의 현재 HEAD).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base: String,
+    /// 메모 작업 에이전트의 권한 모드. 비우면 `bypassPermissions`(워크트리 안에서 묻지 않고 일한다).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub permission_mode: String,
+    /// 모델(비우면 Claude Code 기본값).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    /// 폴더 이름.
+    pub slug: String,
+    pub dir: PathBuf,
+    pub file: ProjectFile,
+}
+
+impl Project {
+    pub fn name(&self) -> &str {
+        if self.file.name.trim().is_empty() {
+            &self.slug
+        } else {
+            &self.file.name
+        }
+    }
+
+    /// 코드 레포 경로(`~`를 펼친다). 비어 있으면 없음.
+    pub fn repo(&self) -> Option<PathBuf> {
+        let r = self.file.repo.trim();
+        (!r.is_empty()).then(|| expand_tilde(r))
+    }
+
+    pub fn column_dir(&self, c: Column) -> PathBuf {
+        self.dir.join(c.dir_name())
+    }
+}
+
+pub fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(h) = std::env::var_os("HOME") {
+            return PathBuf::from(h).join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// 사람이 읽을 경로(`$HOME` → `~`).
+pub fn tilde(p: &Path) -> String {
+    let s = p.display().to_string();
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() && s.starts_with(&h) => format!("~{}", &s[h.len()..]),
+        _ => s,
+    }
+}
+
+/// 폴더 이름으로 쓸 수 있게 바꾼다(영문 소문자·숫자·`-`, 한글은 그대로 둔다).
+pub fn slugify(s: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for ch in s.trim().chars() {
+        if ch.is_alphanumeric() {
+            for c in ch.to_lowercase() {
+                out.push(c);
+            }
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out.chars().take(48).collect()
 }
 
 impl Workspace {
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
-        let root = root.into();
-        let abs = if root.is_absolute() {
-            root
-        } else {
-            std::env::current_dir()?.join(root)
+    /// 인자 → `JADECODE_WORKSPACE` → `~/jc/work` 순서로 고르고, 없으면 만든다.
+    pub fn resolve(arg: Option<&Path>) -> Result<Self> {
+        let root = match arg {
+            Some(p) => p.to_path_buf(),
+            None => match std::env::var_os("JADECODE_WORKSPACE") {
+                Some(p) if !p.is_empty() => PathBuf::from(p),
+                _ => {
+                    let home = std::env::var_os("HOME").context("HOME이 없다")?;
+                    PathBuf::from(home).join("jc/work")
+                }
+            },
         };
-        if !abs.join("jadecode.toml").exists() && !abs.join("work").exists() {
-            bail!("not a jadecode workspace: {}", abs.display());
+        Self::open(&root)
+    }
+
+    pub fn open(root: &Path) -> Result<Self> {
+        std::fs::create_dir_all(root)
+            .with_context(|| format!("워크스페이스 폴더를 만들 수 없다: {}", root.display()))?;
+        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        Ok(Self { root })
+    }
+
+    /// 실행 상태 폴더(`<ws>/.jadecode/<project>`).
+    pub fn state_dir(&self, project: &str) -> PathBuf {
+        self.root.join(".jadecode").join(project)
+    }
+
+    /// `project.toml`이 있는 하위 폴더를 이름순으로.
+    pub fn projects(&self) -> Vec<Project> {
+        let mut out = vec![];
+        let Ok(rd) = std::fs::read_dir(&self.root) else {
+            return out;
+        };
+        for e in rd.flatten() {
+            let dir = e.path();
+            let slug = e.file_name().to_string_lossy().to_string();
+            if slug.starts_with('.') || !dir.join("project.toml").is_file() {
+                continue;
+            }
+            if let Ok(p) = self.load_project(&slug) {
+                out.push(p);
+            }
         }
-        Ok(Self {
-            root: std::fs::canonicalize(&abs).unwrap_or(abs),
+        out.sort_by_key(|p| p.name().to_lowercase());
+        out
+    }
+
+    pub fn load_project(&self, slug: &str) -> Result<Project> {
+        let dir = self.root.join(slug);
+        let text = std::fs::read_to_string(dir.join("project.toml"))
+            .with_context(|| format!("{slug}/project.toml을 읽을 수 없다"))?;
+        let file: ProjectFile =
+            toml::from_str(&text).with_context(|| format!("{slug}/project.toml 형식 오류"))?;
+        Ok(Project {
+            slug: slug.to_string(),
+            dir,
+            file,
         })
     }
 
-    /// 워크스페이스를 만든다. 이미 있으면 손대지 않고 알린다.
-    pub fn init(root: impl Into<PathBuf>, name: &str) -> Result<(Self, bool)> {
-        let root = root.into();
-        let abs = if root.is_absolute() {
-            root
-        } else {
-            std::env::current_dir()?.join(root)
-        };
-        let created = !abs.join("jadecode.toml").exists();
-        std::fs::create_dir_all(&abs).with_context(|| format!("create {}", abs.display()))?;
-        for d in ["work", "events", "arxiv", "log", ".jadecode"] {
-            std::fs::create_dir_all(abs.join(d))?;
+    /// 새 프로젝트를 만든다. 레포가 git 레포가 아니면 거절한다(빈 값은 허용).
+    pub fn create_project(&self, name: &str, repo: &str) -> Result<Project> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("프로젝트 이름이 비어 있다");
         }
-        if created {
-            std::fs::write(
-                abs.join("jadecode.toml"),
-                format!(
-                    "# jadecode 워크스페이스\nname = \"{}\"\nversion = \"0.1\"\n\n[agents]\ndefault = \"claude\"\n",
-                    name.replace('"', "'")
-                ),
-            )?;
-            std::fs::write(
-                abs.join("AGENTS.md"),
-                "# 워크스페이스 공통 지침\n\njadecode 워크스페이스다. 카드 폴더의 `task.md`가 정본이다.\n",
-            )?;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(abs.join("events/global.jsonl"))?;
-            // 기본 봇 네 개와 정책(사람이 정하는 값)을 심는다.
-            crate::scaffold::install(&abs)?;
-        }
-        Ok((
-            Self {
-                root: std::fs::canonicalize(&abs).unwrap_or(abs),
-            },
-            created,
-        ))
-    }
-
-    pub fn name(&self) -> String {
-        std::fs::read_to_string(self.root.join("jadecode.toml"))
-            .ok()
-            .and_then(|s| s.parse::<toml::Table>().ok())
-            .and_then(|t| t.get("name").and_then(|v| v.as_str().map(String::from)))
-            .unwrap_or_else(|| {
-                self.root
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            })
-    }
-
-    /// 프로젝트 폴더를 만든다.
-    pub fn add_project(&mut self, name: &str, repo: Option<&str>) -> Result<PathBuf> {
-        let slug: String = name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '-'
-                }
-            })
-            .collect::<String>()
-            .split('-')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
+        let slug = slugify(name);
         if slug.is_empty() {
-            bail!("project name needs ascii letters or digits: {name:?}");
+            bail!("프로젝트 이름으로 폴더 이름을 만들 수 없다: {name}");
         }
-        let rel = format!("work/{slug}");
-        let abs = self.root.join(&rel);
-        if abs.exists() {
-            bail!("project exists: {slug}");
+        let dir = self.root.join(&slug);
+        if dir.join("project.toml").exists() {
+            bail!("이미 있는 프로젝트다: {slug}");
         }
-        std::fs::create_dir_all(&abs)?;
-        let repos = match repo {
-            Some(r) => format!("[[repos]]\nname = \"{r}\"\n"),
-            None => String::new(),
-        };
-        std::fs::write(
-            abs.join("project.toml"),
-            format!(
-                "# jadecode 프로젝트\nname = \"{}\"\nslug = \"{slug}\"\n{repos}",
-                name.replace('"', "'")
-            ),
-        )?;
-        let mut store = self.store()?;
-        store.append(vec![NewEvent::new(
-            project_topic(&rel),
-            "project.created",
-            serde_json::json!({"name":name,"slug":slug,"repos":repo}),
-        )])?;
-        Ok(abs)
-    }
-
-    /// 카드 목록. 파일이 정본이므로 색인이 아니라 파일을 읽는다.
-    pub fn cards(&self) -> Result<Vec<CardEntry>> {
-        let layout = index::scan_layout(&self.root)?;
-        let mut out = vec![];
-        for rel in layout.cards {
-            let p = self.root.join(&rel).join("task.md");
-            let content = match std::fs::read_to_string(&p) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            match card_state(&content) {
-                Ok(state) => out.push(CardEntry { rel, state }),
-                Err(e) => eprintln!("skip {}: {e}", p.display()),
+        let repo = repo.trim();
+        if !repo.is_empty() {
+            let rp = expand_tilde(repo);
+            if !rp.is_dir() {
+                bail!("레포 폴더가 없다: {repo}");
+            }
+            if !crate::worktree::is_git_repo(&rp) {
+                bail!("git 레포가 아니다: {repo}");
             }
         }
-        out.sort_by(|a, b| a.state.front.id.cmp(&b.state.front.id));
-        Ok(out)
-    }
-
-    /// 카드 하나. 폴더 이름·상대 경로·ULID(앞부분)로 찾는다.
-    pub fn find_card(&self, needle: &str) -> Result<CardEntry> {
-        let cards = self.cards()?;
-        let needle = needle.trim_end_matches('/');
-        let hits: Vec<&CardEntry> = cards
-            .iter()
-            .filter(|c| {
-                let dir = c.rel.rsplit('/').next().unwrap_or("");
-                c.rel == needle
-                    || dir == needle
-                    || c.state.front.id == needle
-                    || (!needle.is_empty() && c.state.front.id.starts_with(needle))
-            })
-            .collect();
-        match hits.len() {
-            1 => Ok(hits[0].clone()),
-            0 => bail!("no card matches {needle:?}"),
-            n => bail!("{n} cards match {needle:?}; be more specific"),
+        let file = ProjectFile {
+            name: name.to_string(),
+            repo: repo.to_string(),
+            ..Default::default()
+        };
+        std::fs::create_dir_all(&dir)?;
+        for c in Column::ALL {
+            std::fs::create_dir_all(dir.join(c.dir_name()))?;
         }
-    }
-
-    pub fn store(&self) -> Result<Store> {
-        Ok(Store::open(&self.root, Fsync::Batch)?.0)
-    }
-
-    pub fn store_with(&self, fsync: Fsync) -> Result<Store> {
-        Ok(Store::open(&self.root, fsync)?.0)
-    }
-
-    pub fn journal_path(&self, rel: &str) -> PathBuf {
-        self.root.join(rel)
+        crate::write_atomic(
+            &dir.join("project.toml"),
+            toml::to_string(&file)?.as_bytes(),
+        )?;
+        Ok(Project { slug, dir, file })
     }
 }
 
@@ -203,185 +210,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn init_and_reopen() {
-        let d = tempdir();
-        let (ws, created) = Workspace::init(&d, "acme").unwrap();
-        assert!(created);
-        assert!(ws.root.join("jadecode.toml").exists());
-        assert!(ws.root.join("work").is_dir());
-        assert_eq!(ws.name(), "acme");
-        let (ws2, created2) = Workspace::init(&d, "other").unwrap();
-        assert!(!created2);
-        assert_eq!(ws2.name(), "acme");
-        assert!(Workspace::open(&d).is_ok());
-        assert!(Workspace::open(d.join("nope")).is_err());
+    fn slugs() {
+        assert_eq!(slugify("My App!"), "my-app");
+        assert_eq!(slugify("  결제 영수증  "), "결제-영수증");
+        assert_eq!(slugify("a--b"), "a-b");
+        assert_eq!(slugify("!!"), "");
     }
 
     #[test]
-    fn add_project_and_card() {
-        let d = tempdir();
-        let (mut ws, _) = Workspace::init(&d, "acme").unwrap();
-        ws.add_project("Rate Limit", Some("api")).unwrap();
-        assert!(ws.root.join("work/rate-limit/project.toml").exists());
-        assert!(ws.add_project("rate limit", None).is_err());
-        let p = ws
-            .add_card(crate::NewCard {
-                project: "rate-limit".into(),
-                title: "login throttle".into(),
-                path: vec!["refine".into(), "implement".into()],
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(p.join("task.md").exists());
-        let cards = ws.cards().unwrap();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].state.front.stage, "refine");
-        assert!(cards[0].rel.starts_with("work/rate-limit/login-throttle-"));
-        let found = ws.find_card(&cards[0].state.front.id[..10]).unwrap();
-        assert_eq!(found.rel, cards[0].rel);
-        // 카드 이벤트는 카드 일지로, 카드 추가 알림은 프로젝트 일지로
-        let cj = std::fs::read_to_string(ws.root.join(&cards[0].rel).join("events.jsonl")).unwrap();
-        assert!(cj.contains("card.created"), "{cj}");
-        let pj = std::fs::read_to_string(ws.root.join("work/rate-limit/events.jsonl")).unwrap();
-        assert!(pj.contains("card.added"), "{pj}");
-    }
-
-    #[test]
-    fn full_check_clean_after_writes() {
-        let d = tempdir();
-        let (mut ws, _) = Workspace::init(&d, "acme").unwrap();
-        ws.add_project("p1", None).unwrap();
-        for i in 0..3 {
-            ws.add_card(crate::NewCard {
-                project: "p1".into(),
-                title: format!("card {i}"),
-                path: vec!["refine".into()],
-                ..Default::default()
-            })
-            .unwrap();
-        }
-        let r = crate::store::full_check(&ws.root).unwrap();
-        assert!(r.ok, "{r:?}");
-        assert_eq!(r.seq_gaps, 0);
-        assert_eq!(r.line_mismatch, 0);
-    }
-
-    pub fn tempdir() -> PathBuf {
-        crate::workspace::short_temp_root("jct")
-    }
-}
-
-/// 짧은 임시 워크스페이스 경로를 만든다.
-///
-/// macOS 유닉스 도메인 소켓은 경로가 104바이트를 넘으면 `bind`가 실패한다
-/// (`sun_path[104]`, NUL 포함). `std::env::temp_dir()`은 macOS에서
-/// `/var/folders/XX/…/T`(약 50자)라 그 아래에 긴 이름을 붙이면 넘친다.
-/// 그래서 `/tmp/jc<번호>`처럼 짧게 쓰고, 없으면 임시 폴더로 물러난다.
-pub fn short_temp_root(prefix: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    // 경로는 짧아야 하지만(macOS 소켓 104자), 동시에 절대 겹치면 안 된다.
-    // PID + 원자 카운터 + ULID 조각을 넣는다. **기존 폴더를 지우지 않는다**
-    // (다른 테스트가 쓰는 폴더를 지워 잠금 충돌을 만든 적이 있다).
-    for _ in 0..1000 {
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let tag = crate::ulid::new_id()[22..].to_lowercase(); // 4자
-        let short = format!("/tmp/{prefix}{}-{n}-{tag}", std::process::id());
-        if std::fs::create_dir(&short).is_ok() {
-            return PathBuf::from(short);
-        }
-        // 이미 있으면 다음 이름으로. /tmp 를 못 쓰면 임시 폴더로 물러난다.
-        if !std::path::Path::new("/tmp").is_dir() {
-            break;
-        }
-    }
-    let fallback = std::env::temp_dir().join(format!(
-        "{prefix}{}-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed),
-        crate::ulid::new_id()[20..].to_lowercase()
-    ));
-    let _ = std::fs::create_dir(&fallback);
-    fallback
-}
-
-/// 워크스페이스의 기본 서버 소켓 경로.
-///
-/// `<워크스페이스>/.jadecode/jadecode.sock`이 소켓 길이 한도(100자)를 넘으면
-/// 워크스페이스 이름으로 `/tmp/jc-<이름>.sock`을 쓴다. CLI 서버와 앱에 내장된
-/// 로컬 백엔드가 같은 규칙을 써야 서로를 찾는다.
-pub fn default_socket(root: &std::path::Path) -> PathBuf {
-    let inside = root.join(".jadecode/jadecode.sock");
-    if inside.as_os_str().len() <= 100 {
-        return inside;
-    }
-    let tag: String = root
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "ws".into())
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .take(12)
-        .collect();
-    PathBuf::from(format!("/tmp/jc-{tag}.sock"))
-}
-
-/// 유닉스 소켓 경로가 플랫폼 한도 안에 드는지(진단용).
-pub fn socket_path_len_ok(p: &std::path::Path) -> bool {
-    // macOS 104, 리눅스 108. 양쪽 다 안전한 100을 기준으로 본다.
-    p.as_os_str().len() <= 100
-}
-
-#[cfg(test)]
-mod sock_tests {
-    use super::*;
-
-    #[test]
-    fn short_temp_root_is_short() {
-        let p = short_temp_root("jcx");
-        let s = p.to_string_lossy().to_string();
-        assert!(s.len() < 40, "{s}");
-        assert!(p.is_dir());
-        // 두 번 불러도 서로 다르다.
-        let q = short_temp_root("jcx");
-        assert_ne!(p, q);
-    }
-
-    #[test]
-    fn socket_len_check() {
-        assert!(socket_path_len_ok(std::path::Path::new("/tmp/a.sock")));
-        let long = format!("/var/folders/xx/{}/s.sock", "a".repeat(120));
-        assert!(!socket_path_len_ok(std::path::Path::new(&long)));
-    }
-}
-
-#[cfg(test)]
-mod unique_temp_tests {
-    use super::*;
-    use std::collections::HashSet;
-
-    #[test]
-    fn temp_roots_never_collide() {
-        let mut seen = HashSet::new();
-        for _ in 0..200 {
-            let p = short_temp_root("jcu");
-            assert!(p.is_dir(), "{}", p.display());
-            assert!(seen.insert(p.clone()), "중복 경로: {}", p.display());
-            let s = p.to_string_lossy().to_string();
-            assert!(s.len() < 40, "너무 길다: {s}");
-            let _ = std::fs::remove_dir(&p);
-        }
-    }
-
-    #[test]
-    fn temp_root_does_not_delete_existing() {
-        // 같은 이름이 이미 있으면 지우지 않고 다른 이름을 준다.
-        let a = short_temp_root("jcd");
-        std::fs::write(a.join("marker"), "keep").unwrap();
-        let b = short_temp_root("jcd");
-        assert_ne!(a, b);
-        assert!(a.join("marker").exists(), "기존 폴더를 지웠다");
-        let _ = std::fs::remove_dir_all(&a);
-        let _ = std::fs::remove_dir_all(&b);
+    fn create_and_list() {
+        let tmp = crate::board::tests::tmpdir("ws");
+        let ws = Workspace::open(&tmp).unwrap();
+        assert!(ws.projects().is_empty());
+        let p = ws.create_project("Demo App", "").unwrap();
+        assert_eq!(p.slug, "demo-app");
+        assert!(p.dir.join("todo").is_dir());
+        let list = ws.projects();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name(), "Demo App");
+        assert!(ws.create_project("demo app", "").is_err());
+        assert!(ws.create_project("x", "/definitely/not/here").is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

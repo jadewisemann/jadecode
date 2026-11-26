@@ -34,7 +34,7 @@ if [ -n "$TARGET" ]; then
   PLATFORM="${os}-${arch}"
 fi
 
-BINS="jadecode jadecode-mcp jadecode-client jc-bench"
+BINS="jadecode jadecode-client"
 for b in $BINS; do
   [ -x "target/release/$b" ] || { echo "target/release/$b 없음. cargo build --release --workspace --features jc-client/ui --bins 먼저" >&2; exit 3; }
 done
@@ -61,7 +61,7 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 DEST="${JADECODE_PREFIX:-$HOME/.local/bin}"
 mkdir -p "$DEST"
-for b in jadecode jadecode-mcp jadecode-client jc-bench; do
+for b in jadecode jadecode-client; do
   cp "$HERE/$b" "$DEST/$b"
   chmod +x "$DEST/$b"
   echo "installed $DEST/$b"
@@ -75,7 +75,7 @@ if [ -d "$HERE/jadecode.app" ]; then
   fi
 fi
 echo
-echo "다음: jadecode-client (또는 open /Applications/jadecode.app). 서버가 없으면 앱이 로컬 백엔드를 띄운다"
+echo "다음: jadecode-client (또는 open /Applications/jadecode.app)"
 EOS
 
 chmod +x "dist/$DIR/install.sh"
