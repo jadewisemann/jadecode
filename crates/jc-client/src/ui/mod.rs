@@ -894,7 +894,7 @@ impl Main {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(220.))
+            .w(px(200.))
             .h_full()
             .bg(rgb(SIDEBAR))
             .border_r_1()
@@ -1033,7 +1033,7 @@ impl Main {
                 .flex()
                 .flex_col()
                 .flex_1()
-                .min_w(px(200.))
+                .min_w(px(176.))
                 .gap_2()
                 .h_full()
                 .p_2()
@@ -1547,7 +1547,7 @@ impl Main {
             div()
                 .absolute()
                 .bottom(px(16.))
-                .left(px(236.))
+                .left(px(216.))
                 .max_w(px(560.))
                 .px_4()
                 .py_2()
@@ -1673,6 +1673,8 @@ impl Render for Main {
             self.last_title = title;
         }
 
+        // 오른쪽 칸은 창 너비의 1/3쯤(좁은 화면에서 보드가 가려지지 않게).
+        let pane_w = (window.viewport_size().width * 0.33).clamp(px(340.), px(460.));
         let body: AnyElement = if self.project.is_none() {
             self.welcome(cx).into_any_element()
         } else {
@@ -1697,7 +1699,7 @@ impl Render for Main {
                         .child(
                             div()
                                 .flex_none()
-                                .w(px(440.))
+                                .w(pane_w)
                                 .h_full()
                                 .border_l_1()
                                 .border_color(rgb(LINE))
